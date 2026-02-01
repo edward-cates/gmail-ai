@@ -46,6 +46,4 @@ jobs:
         run: make deploy-function
 
       - name: Deploy email-processor
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: make deploy-email-processor
