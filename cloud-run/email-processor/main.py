@@ -25,7 +25,9 @@ SCOPES = [
 ]
 
 
-def log_structured(trace_id: str, email_id: str, stage: str, result: str = "success", metadata: dict | None = None) -> None:
+def log_structured(
+    trace_id: str, email_id: str, stage: str, result: str = "success", metadata: dict | None = None
+) -> None:
     """Log structured JSON to Cloud Logging."""
     log_data = {
         "trace_id": trace_id,
@@ -143,12 +145,15 @@ def classify_email(subject: str, sender: str, body: str) -> dict:
 - noti: Unimportant/noisy NOTIFICATIONS. Automated alerts that don't require attention.
   Examples: social media activity (likes, follows, comments), app badges, shipping updates,
   order confirmations, receipts, subscription renewals, "someone viewed your profile",
-  automated system alerts, calendar reminders, read receipts.
+  automated system alerts, calendar reminders, read receipts, routine credit monitoring alerts
+  (e.g., Experian, TransUnion, Equifax regular status updates without significant changes).
 
 - other: Important notifications or personal emails that need attention and/or response. Do NOT classify here
   unless it clearly doesn't fit above categories.
-  Examples: password resets, 2FA codes, bank/payment alerts, account security alerts,
-  direct messages from real people, direct social media comments from real people (they warrant response), calendar invites, support responses.
+  Examples: password resets, 2FA codes, bank/payment alerts requiring action (unusual activity, fraud),
+  account security alerts, credit monitoring alerts indicating significant changes (score drops, new accounts),
+  direct messages from real people, direct social media comments from real people (they warrant response),
+  calendar invites, support responses.
 
 Email:
 From: {sender}
@@ -257,7 +262,13 @@ def main():
         # Label and archive
         try:
             apply_label(service, email_id, category, archive=True)
-            log_structured(trace_id, email_id, "action", "success", {"action": "label_and_archive", "label": category})
+            log_structured(
+                trace_id,
+                email_id,
+                "action",
+                "success",
+                {"action": "label_and_archive", "label": category},
+            )
             logger.info(f"Applied '{category}' label and archived {email_id}")
         except Exception as e:
             logger.error(f"Failed to apply label/archive: {e}")
@@ -271,7 +282,9 @@ def main():
 
             # Summarize the newsletter
             summary = summarize_newsletter(subject, sender, body)
-            log_structured(trace_id, email_id, "summarize", "success", {"summary_length": len(summary)})
+            log_structured(
+                trace_id, email_id, "summarize", "success", {"summary_length": len(summary)}
+            )
 
             # Send summary email (subject starts with 🤖 to skip processing)
             summary_subject = f"🤖 {subject}"
@@ -281,7 +294,13 @@ def main():
 
             # Label and archive original
             apply_label(service, email_id, category, archive=True)
-            log_structured(trace_id, email_id, "action", "success", {"action": "summarize_and_archive", "label": category})
+            log_structured(
+                trace_id,
+                email_id,
+                "action",
+                "success",
+                {"action": "summarize_and_archive", "label": category},
+            )
             logger.info(f"Summarized, emailed, and archived newsletter {email_id}")
         except Exception as e:
             logger.error(f"Failed to process newsletter: {e}")
