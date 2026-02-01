@@ -146,9 +146,8 @@ deploy-watch-renewal:
 
 deploy-email-processor:
 	@echo "Deploying email-processor job..."
-	@if [ ! -f .env ]; then echo "Error: .env file not found"; exit 1; fi
-	@export $$(cat .env | grep -v '^#' | xargs) && \
-	if [ -z "$$ANTHROPIC_API_KEY" ]; then echo "Error: ANTHROPIC_API_KEY not set"; exit 1; fi && \
+	@if [ -f .env ]; then export $$(cat .env | grep -v '^#' | xargs); fi && \
+	if [ -z "$$ANTHROPIC_API_KEY" ]; then echo "Error: ANTHROPIC_API_KEY not set (set in .env or environment)"; exit 1; fi && \
 	SERVICE_ACCOUNT=$$(gcloud iam service-accounts list --project=$(PROJECT_ID) --filter="email:*-compute@developer.gserviceaccount.com" --format="value(email)" | head -1) && \
 	gcloud run jobs deploy email-processor \
 		--source=cloud-run/email-processor \
@@ -168,9 +167,8 @@ deploy-email-processor:
 
 deploy-unsubscribe-service:
 	@echo "Deploying unsubscribe-service job..."
-	@if [ ! -f .env ]; then echo "Error: .env file not found"; exit 1; fi
-	@export $$(cat .env | grep -v '^#' | xargs) && \
-	if [ -z "$$ANTHROPIC_API_KEY" ]; then echo "Error: ANTHROPIC_API_KEY not set"; exit 1; fi && \
+	@if [ -f .env ]; then export $$(cat .env | grep -v '^#' | xargs); fi && \
+	if [ -z "$$ANTHROPIC_API_KEY" ]; then echo "Error: ANTHROPIC_API_KEY not set (set in .env or environment)"; exit 1; fi && \
 	SERVICE_ACCOUNT=$$(gcloud iam service-accounts list --project=$(PROJECT_ID) --filter="email:*-compute@developer.gserviceaccount.com" --format="value(email)" | head -1) && \
 	gcloud run jobs deploy unsubscribe-service \
 		--source=cloud-run/unsubscribe-service \
