@@ -274,3 +274,40 @@ class Config:
                 return api_key
 
         return None  # Will fall back to llm_api_key
+
+    # Cloud configuration
+
+    @property
+    def cloud_project_id(self) -> str:
+        """Google Cloud project ID."""
+        return self._get("cloud", "project_id", default="")
+
+    @property
+    def cloud_pubsub_topic(self) -> str:
+        """Pub/Sub topic name for Gmail Watch notifications."""
+        return self._get("cloud", "pubsub_topic", default="")
+
+    @property
+    def cloud_storage_bucket(self) -> str:
+        """Cloud Storage bucket name for logs."""
+        return self._get("cloud", "storage_bucket", default="")
+
+    @property
+    def cloud_tasks_queue(self) -> str:
+        """Cloud Tasks queue name for email processing jobs."""
+        return self._get("cloud", "tasks_queue", default="email-processing")
+
+    @property
+    def cloud_tasks_location(self) -> str:
+        """Cloud Tasks queue location (region)."""
+        return self._get("cloud", "tasks_location", default="us-central1")
+
+    @property
+    def cloud_run_service(self) -> str:
+        """Cloud Run service name for email processing."""
+        return self._get("cloud", "run_service", default="email-processor")
+
+    @property
+    def cloud_processing_label(self) -> str:
+        """Label name to mark emails as being processed (prevents duplicate processing)."""
+        return self._get("cloud", "processing_label", default="🤖")

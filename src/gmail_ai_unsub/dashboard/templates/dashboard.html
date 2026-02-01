@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gmail AI Unsub Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        header {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin-top: 10px;
+        }
+        .stat {
+            padding: 10px 15px;
+            background: #f0f0f0;
+            border-radius: 4px;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+        .logs-container {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .log-entry {
+            padding: 15px 20px;
+            border-bottom: 1px solid #eee;
+            transition: background 0.2s;
+        }
+        .log-entry:hover {
+            background: #f9f9f9;
+        }
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        .log-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .log-subject {
+            font-weight: 600;
+            color: #333;
+            font-size: 16px;
+        }
+        .log-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 12px;
+            color: #666;
+        }
+        .log-snippet {
+            color: #555;
+            font-size: 14px;
+            margin-top: 8px;
+            line-height: 1.5;
+        }
+        .log-stage {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .stage-entry { background: #e3f2fd; color: #1976d2; }
+        .stage-query { background: #fff3e0; color: #e65100; }
+        .stage-mark { background: #e1f5fe; color: #0277bd; }
+        .stage-archive { background: #fce4ec; color: #c2185b; }
+        .stage-task_create { background: #f3e5f5; color: #7b1fa2; }
+        .stage-fetch { background: #f3e5f5; color: #7b1fa2; }
+        .stage-complete { background: #e8f5e9; color: #388e3c; }
+        .stage-skip { background: #f5f5f5; color: #616161; }
+        .stage-failure { background: #ffebee; color: #c62828; }
+        .result-success { color: #388e3c; }
+        .result-failure { color: #c62828; }
+        .refresh-btn {
+            background: #1976d2;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .refresh-btn:hover {
+            background: #1565c0;
+        }
+        .empty-state {
+            padding: 40px;
+            text-align: center;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Gmail AI Unsub Dashboard</h1>
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-label">Recent Logs</div>
+                    <div class="stat-value">{{ log_count }}</div>
+                </div>
+            </div>
+            <button class="refresh-btn" onclick="location.reload()">Refresh</button>
+        </header>
+
+        <div class="logs-container">
+            {% if logs %}
+                {% for log in logs %}
+                <div class="log-entry">
+                    <div class="log-header">
+                        <div class="log-subject">
+                            {% if log.metadata and log.metadata.subject %}
+                                {{ log.metadata.subject }}
+                            {% elif log.stage == 'entry' %}
+                                Pub/Sub message received
+                            {% else %}
+                                (No subject)
+                            {% endif %}
+                        </div>
+                        <span class="log-stage stage-{{ log.stage }}">
+                            {{ log.stage }}
+                        </span>
+                    </div>
+                    <div class="log-meta">
+                        <span>Email ID: {{ log.email_id if log.email_id != 'unknown' else 'Not yet parsed' }}</span>
+                        <span>Trace: {{ log.trace_id[:8] }}...</span>
+                        <span class="result-{{ log.result }}">{{ log.result }}</span>
+                        <span>{{ log.timestamp[:19] if log.timestamp else '' }}</span>
+                        {% if log.duration_ms %}
+                        <span>{{ log.duration_ms }}ms</span>
+                        {% endif %}
+                    </div>
+                    {% if log.metadata and log.metadata.snippet %}
+                    <div class="log-snippet">
+                        {{ log.metadata.snippet }}
+                    </div>
+                    {% elif log.metadata and log.metadata.error %}
+                    <div class="log-snippet" style="color: #c62828;">
+                        Error: {{ log.metadata.error }}
+                    </div>
+                    {% elif log.stage == 'query' and log.metadata and log.metadata.count is defined %}
+                    <div class="log-snippet" style="color: #666;">
+                        Found {{ log.metadata.count }} email(s) to process
+                    </div>
+                    {% elif log.stage == 'entry' %}
+                    <div class="log-snippet" style="color: #666;">
+                        Waiting to fetch email details...
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="empty-state">
+                    <p>No logs found in the last 24 hours.</p>
+                    <p>Emails will appear here once Gmail Watch notifications are received.</p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        // Auto-refresh every 10 seconds
+        setTimeout(function() {
+            location.reload();
+        }, 10000);
+    </script>
+</body>
+</html>

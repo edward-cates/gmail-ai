@@ -74,6 +74,10 @@ dependencies = [
     "questionary>=2.0.0",
     "requests>=2.32.0",
     "rich>=13.0.0",
+    "google-cloud-storage>=2.14.0",
+    "fastapi>=0.115.0",
+    "jinja2>=3.1.0",
+    "uvicorn>=0.32.0",
 ]
 [project.urls]
 Homepage = "https://zacbowling.com"

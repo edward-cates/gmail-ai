@@ -20,14 +20,43 @@ Final architecture includes:
 ## Architecture Diagram
 
 ```
-Gmail Watch → Pub/Sub Topic → Single Cloud Function
+Gmail Watch → Pub/Sub Topic → Cloud Function (Orchestrator)
                                       ↓
                             ┌─────────────────┐
                             │  Entry Handler   │ → 📝 Log: entry
                             └─────────────────┘
                                       ↓
                             ┌─────────────────┐
-                            │  Classification │ → 📝 Log: classification result
+                            │  Query Inbox    │ → Find emails without 🤖 tag
+                            │  (is:inbox      │
+                            │   -label:🤖)    │
+                            └─────────────────┘
+                                      ↓
+                            ┌─────────────────┐
+                            │  Mark with 🤖    │ → Apply tag immediately
+                            │  (even on error)│   (prevents reprocessing)
+                            └─────────────────┘
+                                      ↓
+                            ┌─────────────────┐
+                            │  Create Cloud   │ → One task per email
+                            │  Tasks          │
+                            └─────────────────┘
+                                      ↓
+                    ┌─────────────────────────────────┐
+                    │    Cloud Tasks Queue            │
+                    └─────────────────────────────────┘
+                                      ↓
+                    ┌─────────────────────────────────┐
+                    │    Cloud Run Service            │
+                    │    (email-processor)           │
+                    └─────────────────────────────────┘
+                                      ↓
+                            ┌─────────────────┐
+                            │  Fetch Email    │ → 📝 Log: fetch
+                            └─────────────────┘
+                                      ↓
+                            ┌─────────────────┐
+                            │  Classification │ → 📝 Log: classification
                             │     Agent       │
                             └─────────────────┘
                                       ↓
@@ -36,6 +65,8 @@ Gmail Watch → Pub/Sub Topic → Single Cloud Function
             ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
             │  Marketing   │  │ Newsletter   │  │ Unimportant   │
             │    Agent     │  │    Agent     │  │    Agent     │
+            │  (Browser    │  │  (Summarize) │  │  (Archive)   │
+            │   Automation)│  │              │  │              │
             └──────────────┘  └──────────────┘  └──────────────┘
                     ↓                 ↓                 ↓
             📝 Log: action    📝 Log: action    📝 Log: action
@@ -52,7 +83,12 @@ Gmail Watch → Pub/Sub Topic → Single Cloud Function
                     Prod: https://dashboard.run.app
 ```
 
-**Note**: All processing happens in a single Cloud Function invocation. Agents are modular code modules, not separate services. Logging occurs at every step.
+**Note**: 
+- **Cloud Function (Orchestrator)**: Fast, lightweight - just queries inbox, creates tasks
+- **Cloud Run (Processor)**: Handles heavy processing (classification, browser automation, etc.) with longer timeouts
+- **Cloud Tasks Deduplication**: Task name = email ID, prevents duplicate processing even if Pub/Sub sends simultaneous notifications (1-hour deduplication window)
+- **🤖 Tag**: Applied after task creation for tracking/visibility, not for deduplication (Cloud Tasks handles that)
+- **Cloud Tasks**: Provides reliable delivery, retry, and built-in deduplication
 
 ## Components
 
@@ -61,21 +97,44 @@ Gmail Watch → Pub/Sub Topic → Single Cloud Function
 - Message contains: `emailId`, `historyId`, `expiration`
 - **Free tier**: 10GB/month
 
-### 2. Single Cloud Function (All Processing)
+**Note**: Cloud Tasks free tier: 1M operations/month
+
+### 2. Cloud Function (Orchestrator)
 **File**: `src/gmail_ai_unsub/cloud/pubsub_handler.py`
 
-**Flow (all in one function invocation):**
+**Flow:**
 1. **Entry**: Receive Pub/Sub message → 📝 Log entry
-2. **Fetch**: Extract `emailId`, fetch email from Gmail API → 📝 Log fetch
+2. **Query Inbox**: Find all emails in inbox (read or unread) without 🤖 tag → 📝 Log query result
+3. **Create Tasks**: Create Cloud Task for each email (task name = email ID for deduplication) → 📝 Log task creation
+4. **Mark Emails**: For each email, apply 🤖 tag (for tracking, not deduplication) → 📝 Log marking
+5. **Complete**: Return success/failure → 📝 Log completion
+
+**Deduplication Strategy:**
+- **Cloud Tasks**: Task name = `email-{email_id}` prevents duplicate tasks even if Pub/Sub sends simultaneous notifications (1-hour deduplication window)
+- **🤖 Tag**: Applied after task creation for visibility/tracking, not for deduplication
+
+**Key Points:**
+- Fast, lightweight function (no heavy processing)
+- Cloud Tasks deduplication prevents race conditions (task name = email ID)
+- 🤖 tag applied after task creation (for tracking, not deduplication)
+- Cloud Tasks provide reliable delivery and retry
+- Each email gets independent task (parallel processing)
+
+### 2b. Cloud Run Service (Email Processor)
+**File**: `src/gmail_ai_unsub/cloud/email_processor.py` (new)
+
+**Flow (handles single email per invocation):**
+1. **Entry**: Receive HTTP request from Cloud Task → 📝 Log entry
+2. **Fetch**: Fetch email from Gmail API → 📝 Log fetch
 3. **Classify**: Run Classification Agent → 📝 Log classification result
 4. **Route & Execute**: Route to appropriate action agent, execute → 📝 Log action
 5. **Complete**: Return success/failure → 📝 Log completion
 
 **Key Points:**
-- Single Cloud Function handles entire flow
-- Agents are modular Python modules (not separate services)
-- Logging at every step for full traceability
-- Trace ID generated at entry, passed through all steps
+- Handles one email per invocation
+- Longer timeout (60+ seconds) for browser automation
+- More memory/CPU for Playwright and AI models
+- Independent processing (failures don't affect other emails)
 
 ### 3. Classification Agent
 **File**: `src/gmail_ai_unsub/agents/classifier.py`
@@ -222,6 +281,10 @@ label = "Unimportant Notification"
 pubsub_topic = "projects/YOUR_PROJECT/topics/gmail-notifications"
 project_id = "YOUR_PROJECT"
 storage_bucket = "gmail-ai-logs"
+tasks_queue = "email-processing"  # Cloud Tasks queue name
+tasks_location = "us-central1"     # Cloud Tasks queue location
+run_service = "email-processor"   # Cloud Run service name
+processing_label = "🤖"            # Label to mark processed emails
 ```
 
 ## Google Cloud Setup
@@ -258,20 +321,38 @@ storage_bucket = "gmail-ai-logs"
    gcloud storage buckets create gs://gmail-ai-logs --location=us-central1
    ```
 
-5. **Deploy Cloud Function** (single function handles all processing)
+5. **Create Cloud Tasks Queue**
    ```bash
-   gcloud functions deploy gmail-processor \
+   gcloud tasks queues create email-processing \
+     --location=us-central1
+   ```
+
+6. **Deploy Cloud Function (Orchestrator)**
+   ```bash
+   gcloud functions deploy gmail-orchestrator \
      --gen2 \
      --runtime=python312 \
      --region=us-central1 \
      --source=. \
      --entry-point=handle_pubsub \
      --trigger-topic=gmail-notifications \
-     --timeout=540s \
-     --memory=512Mi
+     --timeout=60s \
+     --memory=256Mi
    ```
 
-6. **Deploy Dashboard**
+7. **Deploy Cloud Run Service (Email Processor)**
+   ```bash
+   gcloud run deploy email-processor \
+     --source=. \
+     --region=us-central1 \
+     --timeout=300s \
+     --memory=1Gi \
+     --cpu=1 \
+     --no-allow-unauthenticated \
+     --service-account=email-processor@YOUR_PROJECT.iam.gserviceaccount.com
+   ```
+
+8. **Deploy Dashboard**
    ```bash
    gcloud run deploy gmail-ai-dashboard \
      --source=. \
@@ -296,11 +377,13 @@ storage_bucket = "gmail-ai-logs"
 - [ ] Add agent routing logic
 
 ### Phase 3: Cloud Integration
-- [ ] Implement Pub/Sub handler (single function with all steps)
-- [ ] Add logging at every step (entry, fetch, classify, action, complete)
+- [ ] Implement Pub/Sub handler (orchestrator: query inbox, create tasks with deduplication, mark emails)
+- [ ] Implement Cloud Run service (processor: fetch, classify, execute actions)
+- [ ] Add Cloud Tasks integration (create tasks with email ID as task name for deduplication)
+- [ ] Add logging at every step (entry, query, task creation, mark, fetch, classify, action, complete)
 - [ ] Set up structured logging to Cloud Storage
-- [ ] Deploy Cloud Function
-- [ ] Test end-to-end flow with full logging
+- [ ] Deploy Cloud Function (orchestrator) and Cloud Run (processor)
+- [ ] Test end-to-end flow with full logging and verify deduplication works
 
 ### Phase 4: Dashboard
 - [ ] Build FastAPI dashboard app
@@ -351,7 +434,11 @@ gmail-ai-unsub cloud deploy
 
 ## Design Decisions
 
-1. **Single Cloud Function**: All processing in one function invocation for simplicity, lower latency, and easier debugging
+1. **Cloud Function + Cloud Run**: Orchestrator (fast, lightweight) creates tasks; Processor (heavy, long-running) handles email processing. This separation allows:
+   - Fast Pub/Sub response (orchestrator completes quickly)
+   - Longer timeouts for browser automation (Cloud Run supports 60+ seconds)
+   - Better resource allocation (more memory/CPU for Playwright)
+   - Independent processing (one email failure doesn't block others)
 2. **Modular Agents**: Code organization as separate modules, not separate services
 3. **Comprehensive Logging**: Log at every step (entry, fetch, classify, action start, action steps, action complete, overall) for full traceability
 4. **Cloud Storage Logs**: JSONL format, partitioned by date for efficient queries
@@ -360,6 +447,7 @@ gmail-ai-unsub cloud deploy
 7. **Backward Compatibility**: Keep existing `is_marketing` field, add `category`
 8. **Free Tier First**: All components use free tier services
 9. **No Retry/Catch-up**: If service fails or is down, missed emails are just missed - no retry logic, no dead letter queue, no catch-up mechanism. Acceptable for personal use.
+10. **Cloud Tasks Deduplication**: Task names use email ID to prevent duplicate processing from simultaneous Pub/Sub notifications. Deduplication window is ~1 hour, which is sufficient for preventing race conditions.
 
 ## Open Questions
 
@@ -517,6 +605,10 @@ Add to `config.toml`:
 pubsub_topic = "projects/YOUR_PROJECT/topics/gmail-notifications"
 project_id = "YOUR_PROJECT"
 storage_bucket = "gmail-ai-logs"
+tasks_queue = "email-processing"  # Cloud Tasks queue name
+tasks_location = "us-central1"     # Cloud Tasks queue location
+run_service = "email-processor"   # Cloud Run service name
+processing_label = "🤖"            # Label to mark processed emails
 ```
 
 ## Google Cloud Setup
