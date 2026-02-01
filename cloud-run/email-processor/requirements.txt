@@ -11,3 +11,6 @@ google-auth-oauthlib>=1.0.0
 
 # Cloud Storage (for OAuth token)
 google-cloud-storage>=2.0.0
+
+# HTML parsing for newsletters
+beautifulsoup4>=4.12.0
