@@ -35,6 +35,7 @@ class CloudLogger:
         result: str = "success",
         duration_ms: int | None = None,
         metadata: dict[str, Any] | None = None,
+        service: str | None = None,
     ) -> None:
         """Write a log entry to Cloud Storage.
 
@@ -45,6 +46,7 @@ class CloudLogger:
             result: Result status (success, failure, skipped)
             duration_ms: Duration in milliseconds (optional)
             metadata: Additional metadata (optional)
+            service: Service name (e.g., "orchestrator", "processor") (optional)
         """
         log_entry = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -53,6 +55,9 @@ class CloudLogger:
             "stage": stage,
             "result": result,
         }
+
+        if service:
+            log_entry["service"] = service
 
         if duration_ms is not None:
             log_entry["duration_ms"] = duration_ms

@@ -106,9 +106,22 @@
         .stage-fetch { background: #f3e5f5; color: #7b1fa2; }
         .stage-complete { background: #e8f5e9; color: #388e3c; }
         .stage-skip { background: #f5f5f5; color: #616161; }
+        .stage-task_start { background: #e8f5e9; color: #2e7d32; }
+        .stage-classification { background: #fff9c4; color: #f57f17; }
         .stage-failure { background: #ffebee; color: #c62828; }
         .result-success { color: #388e3c; }
         .result-failure { color: #c62828; }
+        .service-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-left: 8px;
+        }
+        .service-orchestrator { background: #e3f2fd; color: #1565c0; }
+        .service-processor { background: #fff3e0; color: #e65100; }
         .refresh-btn {
             background: #1976d2;
             color: white;
@@ -162,6 +175,9 @@
                     <div class="log-meta">
                         <span>Email ID: {{ log.email_id if log.email_id != 'unknown' else 'Not yet parsed' }}</span>
                         <span>Trace: {{ log.trace_id[:8] }}...</span>
+                        {% if log.service %}
+                        <span class="service-badge service-{{ log.service }}">{{ log.service }}</span>
+                        {% endif %}
                         <span class="result-{{ log.result }}">{{ log.result }}</span>
                         <span>{{ log.timestamp[:19] if log.timestamp else '' }}</span>
                         {% if log.duration_ms %}

@@ -1,4 +1,4 @@
-.PHONY: help validate-dashboard test-dashboard run-dashboard check-logs deploy-function deploy-watch-renewal deploy-run-service setup-queue deploy setup-scheduler watch-build setup-gmail-watch reset-gmail-watch test-pubsub-handler test-email-processor validate
+.PHONY: help validate-dashboard test-dashboard run-dashboard check-logs deploy-function deploy-function-force deploy-watch-renewal deploy-run-service setup-queue deploy setup-scheduler watch-build setup-gmail-watch reset-gmail-watch test-pubsub-handler test-email-processor validate
 
 help:
 	@echo "Available commands:"
@@ -10,7 +10,8 @@ help:
 	@echo "  make run-dashboard      - Run dashboard locally"
 	@echo "  make check-logs         - Check recent Cloud Storage logs"
 	@echo "  make deploy              - Deploy all components (function, watch renewal, run service)"
-	@echo "  make deploy-function     - Deploy Cloud Function (Pub/Sub handler)"
+	@echo "  make deploy-function     - Deploy Cloud Function (Pub/Sub handler) (skips if no changes)"
+	@echo "  make deploy-function-force - Force deploy Cloud Function (ignores change detection)"
 	@echo "  make deploy-watch-renewal - Deploy watch renewal Cloud Function"
 	@echo "  make deploy-run-service  - Deploy Cloud Run service (email processor)"
 	@echo "  make setup-queue         - Create Cloud Tasks queue"
@@ -55,7 +56,8 @@ deploy-function:
 			for file in $$FUNCTION_SOURCE_FILES; do \
 				if [ -f "$$file" ]; then \
 					FILE_TIME=$$(stat -f "%m" "$$file" 2>/dev/null || stat -c "%Y" "$$file" 2>/dev/null); \
-					DEPLOY_TIME=$$(date -j -f "%Y-%m-%dT%H:%M:%S" "$$LAST_DEPLOY" "+%s" 2>/dev/null || date -d "$$LAST_DEPLOY" "+%s" 2>/dev/null); \
+					DEPLOY_TIME_STR=$$(echo "$$LAST_DEPLOY" | sed 's/\.[0-9]*Z//' | sed 's/Z$$//'); \
+					DEPLOY_TIME=$$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$$DEPLOY_TIME_STR" "+%s" 2>/dev/null || TZ=UTC date -d "$$DEPLOY_TIME_STR" "+%s" 2>/dev/null); \
 					if [ -n "$$FILE_TIME" ] && [ -n "$$DEPLOY_TIME" ] && [ "$$FILE_TIME" -gt "$$DEPLOY_TIME" ]; then \
 						echo "  → $$file changed (newer than last deploy)"; \
 						SKIP=0; \
@@ -83,7 +85,25 @@ deploy-function:
 		echo ""; \
 		echo "Resetting Gmail Watch to ensure single subscription..."; \
 		$(MAKE) reset-gmail-watch; \
-	fi
+		fi
+
+deploy-function-force:
+	@echo "Force deploying Cloud Function (ignoring change detection)..."
+	@gcloud functions deploy gmail-processor \
+		--gen2 \
+		--runtime=python312 \
+		--region=us-central1 \
+		--source=. \
+		--entry-point=handle_pubsub_event \
+		--trigger-topic=gmail-watch \
+		--timeout=60s \
+		--memory=256Mi \
+		--project=neat-simplicity-486023-a4 \
+		--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=neat-simplicity-486023-a4" \
+		--verbosity=debug
+	@echo ""
+	@echo "Resetting Gmail Watch to ensure single subscription..."
+	@$(MAKE) reset-gmail-watch
 
 deploy-watch-renewal:
 	@echo "Checking if watch renewal function needs deployment..."
@@ -102,7 +122,8 @@ deploy-watch-renewal:
 			for file in $$FUNCTION_SOURCE_FILES; do \
 				if [ -f "$$file" ]; then \
 					FILE_TIME=$$(stat -f "%m" "$$file" 2>/dev/null || stat -c "%Y" "$$file" 2>/dev/null); \
-					DEPLOY_TIME=$$(date -j -f "%Y-%m-%dT%H:%M:%S" "$$LAST_DEPLOY" "+%s" 2>/dev/null || date -d "$$LAST_DEPLOY" "+%s" 2>/dev/null); \
+					DEPLOY_TIME_STR=$$(echo "$$LAST_DEPLOY" | sed 's/\.[0-9]*Z//' | sed 's/Z$$//'); \
+					DEPLOY_TIME=$$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$$DEPLOY_TIME_STR" "+%s" 2>/dev/null || TZ=UTC date -d "$$DEPLOY_TIME_STR" "+%s" 2>/dev/null); \
 					if [ -n "$$FILE_TIME" ] && [ -n "$$DEPLOY_TIME" ] && [ "$$FILE_TIME" -gt "$$DEPLOY_TIME" ]; then \
 						echo "  → $$file changed (newer than last deploy)"; \
 						SKIP=0; \
@@ -175,7 +196,8 @@ deploy-run-service:
 				for file in $$SERVICE_SOURCE_FILES; do \
 					if [ -f "$$file" ]; then \
 						FILE_TIME=$$(stat -f "%m" "$$file" 2>/dev/null || stat -c "%Y" "$$file" 2>/dev/null); \
-						DEPLOY_TIME=$$(date -j -f "%Y-%m-%dT%H:%M:%S" "$$LAST_UPDATE" "+%s" 2>/dev/null || date -d "$$LAST_UPDATE" "+%s" 2>/dev/null); \
+						DEPLOY_TIME_STR=$$(echo "$$LAST_UPDATE" | sed 's/\.[0-9]*Z//' | sed 's/Z$$//'); \
+						DEPLOY_TIME=$$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$$DEPLOY_TIME_STR" "+%s" 2>/dev/null || TZ=UTC date -d "$$DEPLOY_TIME_STR" "+%s" 2>/dev/null); \
 						if [ -n "$$FILE_TIME" ] && [ -n "$$DEPLOY_TIME" ] && [ "$$FILE_TIME" -gt "$$DEPLOY_TIME" ]; then \
 							echo "  → $$file changed (newer than last deploy)"; \
 							SKIP=0; \

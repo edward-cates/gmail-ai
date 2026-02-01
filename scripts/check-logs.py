@@ -21,8 +21,10 @@ if __name__ == "__main__":
         timestamp = log.get("timestamp", "")[:19] if log.get("timestamp") else "unknown"
         stage = log.get("stage", "unknown")
         result = log.get("result", "unknown")
+        service = log.get("service", "")
         
-        print(f"\n{i}. {timestamp}: {stage} - {result}")
+        service_str = f" [{service}]" if service else ""
+        print(f"\n{i}. {timestamp}: {stage} - {result}{service_str}")
         
         metadata = log.get("metadata", {})
         if metadata.get("subject"):

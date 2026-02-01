@@ -95,7 +95,14 @@ def _log(
     """Log to Cloud Storage, silently failing if logging fails."""
     if cloud_logger:
         try:
-            cloud_logger.log(trace_id=trace_id, email_id=email_id, stage=stage, result=result, metadata=metadata)
+            cloud_logger.log(
+                trace_id=trace_id,
+                email_id=email_id,
+                stage=stage,
+                result=result,
+                metadata=metadata,
+                service="processor",
+            )
         except Exception:
             pass  # Silently fail - logging shouldn't break processing
 

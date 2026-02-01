@@ -87,6 +87,7 @@ def _log(
                 stage=stage,
                 result=result,
                 metadata=metadata,
+                service="orchestrator",
             )
         except Exception:
             pass  # Silently fail - logging shouldn't break processing
@@ -241,6 +242,10 @@ def _process_email_for_task(
             # Use email_id directly as task name (Cloud Tasks will handle the full path)
             task_name = f"email-{email_id}"
 
+            # Create task with OIDC authentication for Cloud Run
+            # Get service account email for OIDC token
+            service_account_email = f"{config.cloud_project_id}-compute@developer.gserviceaccount.com"
+            
             # Create task
             task = tasks_v2.Task(
                 name=tasks_client.task_path(
@@ -254,6 +259,10 @@ def _process_email_for_task(
                     url=f"{service_url}/process",
                     headers={"Content-Type": "application/json"},
                     body=payload,
+                    oidc_token=tasks_v2.OidcToken(
+                        service_account_email=service_account_email,
+                        audience=service_url,
+                    ),
                 ),
             )
 
