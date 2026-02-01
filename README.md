@@ -51,10 +51,22 @@ make check-function-logs     # Cloud Function logs
 make run-dashboard           # Local web dashboard
 ```
 
-## Refresh OAuth Token
+## Secrets & Credentials
 
-When you need to add scopes or token expires:
+| Secret | Local | Cloud |
+|--------|-------|-------|
+| `ANTHROPIC_API_KEY` | `.env` | Secret Manager |
+| `GMAIL_CLIENT_ID` | `.env` | Not needed (only for token gen) |
+| `GMAIL_CLIENT_SECRET` | `.env` | Not needed (only for token gen) |
+| OAuth token | `token.json` | `gs://gmail-ai-logs/token.json` |
 
+**Rotate Anthropic API key:**
+```bash
+export $(cat .env | grep -v '^#' | xargs)
+echo -n "$ANTHROPIC_API_KEY" | gcloud secrets versions add anthropic-api-key --data-file=-
+```
+
+**Refresh OAuth token** (when adding scopes or expired):
 ```bash
 export $(cat .env | grep -v '^#' | xargs)
 uv run python scripts/refresh_token.py
