@@ -8,7 +8,7 @@ import tempfile
 import uuid
 from typing import Any
 
-from google.cloud import storage
+from google.cloud import run_v2, storage, tasks_v2
 
 from gmail_ai_unsub.cloud.email_fetcher import fetch_email_metadata
 from gmail_ai_unsub.cloud.logging import CloudLogger
@@ -215,21 +215,84 @@ def _process_email_for_task(
             },
         )
 
-        # Create Cloud Task (stubbed)
-        _log(
-            cloud_logger,
-            trace_id,
-            email_id,
-            "task_create",
-            "success",
-            {
-                "message": "Task creation stubbed out",
-                "queue": config.cloud_tasks_queue,
-                "location": config.cloud_tasks_location,
-                "service": config.cloud_run_service,
-                "subject": subject,
-            },
-        )
+        # Create Cloud Task
+        try:
+            # Get Cloud Run service URL from API
+            # This ensures we have the correct URL even if service name changes
+            run_client = run_v2.ServicesClient()
+            service_name = f"projects/{config.cloud_project_id}/locations/{config.cloud_tasks_location}/services/{config.cloud_run_service}"
+            service = run_client.get_service(name=service_name)
+            service_url = service.uri
+
+            # Create Cloud Tasks client
+            tasks_client = tasks_v2.CloudTasksClient()
+            queue_path = tasks_client.queue_path(
+                config.cloud_project_id, config.cloud_tasks_location, config.cloud_tasks_queue
+            )
+
+            # Task payload
+            task_payload = {
+                "email_id": email_id,
+                "trace_id": trace_id,
+            }
+            payload = json.dumps(task_payload).encode()
+
+            # Task name for deduplication (1-hour window)
+            # Use email_id directly as task name (Cloud Tasks will handle the full path)
+            task_name = f"email-{email_id}"
+
+            # Create task
+            task = tasks_v2.Task(
+                name=tasks_client.task_path(
+                    config.cloud_project_id,
+                    config.cloud_tasks_location,
+                    config.cloud_tasks_queue,
+                    task_name,
+                ),
+                http_request=tasks_v2.HttpRequest(
+                    http_method=tasks_v2.HttpMethod.POST,
+                    url=f"{service_url}/process",
+                    headers={"Content-Type": "application/json"},
+                    body=payload,
+                ),
+            )
+
+            # Create the task
+            tasks_client.create_task(parent=queue_path, task=task)
+
+            _log(
+                cloud_logger,
+                trace_id,
+                email_id,
+                "task_create",
+                "success",
+                {
+                    "task_name": task_name,
+                    "queue": config.cloud_tasks_queue,
+                    "location": config.cloud_tasks_location,
+                    "service": config.cloud_run_service,
+                    "service_url": service_url,
+                    "subject": subject,
+                },
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to create Cloud Task for email {email_id}: {e}", exc_info=True)
+            _log(
+                cloud_logger,
+                trace_id,
+                email_id,
+                "task_create",
+                "failure",
+                {
+                    "error": str(e),
+                    "queue": config.cloud_tasks_queue,
+                    "location": config.cloud_tasks_location,
+                    "service": config.cloud_run_service,
+                    "subject": subject,
+                },
+            )
+            # Don't raise - continue processing other emails
 
     except AssertionError as e:
         logger.error(f"Validation error for email {email_id}: {e}")

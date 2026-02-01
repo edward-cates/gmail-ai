@@ -96,6 +96,18 @@ Gmail Watch → Pub/Sub Topic → Cloud Function (Orchestrator)
 - Gmail Watch pushes notifications to Pub/Sub topic
 - Message contains: `emailId`, `historyId`, `expiration`
 - **Free tier**: 10GB/month
+- **Expiration**: Watch expires after 7 days (Gmail API limitation)
+- **Auto-renewal**: Cloud Scheduler triggers watch renewal function weekly
+
+**Watch Renewal Components:**
+- **Cloud Function** (`gmail-watch-renewal`): HTTP-triggered function that renews Gmail Watch
+  - Reads OAuth token from Cloud Storage
+  - Stops existing watch and creates fresh one
+  - File: `src/gmail_ai_unsub/cloud/watch_renewal.py`
+- **Cloud Scheduler** (`gmail-watch-renewal`): Runs every Sunday at 2 AM Pacific
+  - Triggers renewal function via HTTP
+  - Ensures watch never expires
+  - **Free tier**: 3 jobs per month
 
 **Note**: Cloud Tasks free tier: 1M operations/month
 
@@ -239,19 +251,21 @@ src/gmail_ai_unsub/
 │   ├── marketing.py          # Marketing unsubscribe agent
 │   ├── newsletter.py         # Newsletter summarization agent
 │   └── unimportant.py        # Archive unimportant notifications
-├── cloud/                     # New: Cloud deployment code
+├── cloud/                     # Cloud deployment code
 │   ├── __init__.py
-│   ├── pubsub_handler.py     # Entry point for Pub/Sub
-│   ├── functions.py           # Cloud Functions entry points
-│   └── logging.py            # Structured logging setup
+│   ├── pubsub_handler.py     # Entry point for Pub/Sub (✅ implemented)
+│   ├── watch_renewal.py      # Watch renewal function (✅ implemented)
+│   ├── email_fetcher.py      # Email metadata extraction (✅ implemented)
+│   └── logging.py            # Structured logging setup (✅ implemented)
 ├── summarization/            # New: Newsletter summarization
 │   ├── __init__.py
 │   └── summarizer.py         # LLM-based summarization
-├── dashboard/                # New: Observability dashboard
+├── dashboard/                # Observability dashboard
 │   ├── __init__.py
-│   ├── app.py                # FastAPI app
-│   ├── templates/            # HTML templates
-│   └── static/               # CSS/JS
+│   ├── app.py                # FastAPI app (✅ implemented)
+│   └── templates/            # HTML templates (✅ implemented)
+│       ├── dashboard.html
+│       └── error.html
 └── [existing files...]
 ```
 
@@ -670,38 +684,66 @@ processing_label = "🤖"            # Label to mark processed emails
 
 ## Implementation Tasks
 
-### Phase 1: Pub/Sub Handler
-- [ ] Create Cloud Function entry point
-- [ ] Parse Pub/Sub message
-- [ ] Extract emailId from notification
-- [ ] Generate trace ID
-- [ ] Log entry
-- [ ] **Error handling**: If message parsing fails, log error and return (don't retry)
+### Phase 1: Pub/Sub Handler ✅ COMPLETE
+- [x] Create Cloud Function entry point
+- [x] Parse Pub/Sub message
+- [x] Query inbox for emails without 🤖 tag
+- [x] Generate trace ID
+- [x] Log entry and query
+- [x] Mark emails with 🤖 tag
+- [x] Create Cloud Tasks (with deduplication)
+- [x] **Error handling**: If message parsing fails, log error and return (don't retry)
+- [x] Dashboard for viewing logs
+- [x] Watch renewal automation
 
-### Phase 2: Email Fetcher
-- [ ] Fetch email metadata from Gmail API
-- [ ] Extract subject from headers
-- [ ] Extract snippet (from Gmail metadata response)
-- [ ] Log fetch result
-- [ ] **Error handling**: If Gmail API fails, log error with emailId and return (don't retry)
+### Phase 2: Classification Task ✅ COMPLETE
+- [x] Create Cloud Run service (email-processor)
+- [x] Implement HTTP endpoint `/process` for Cloud Tasks
+- [x] Fetch full email (subject, from, body) from Gmail API
+- [x] Create classifier with Claude Opus 4.5
+- [x] Classify email using existing EmailClassifier
+- [x] Log task_start stage
+- [x] Log classification result (category, confidence, reason, model)
+- [x] Return JSON response with classification
+- [x] **Error handling**: Log errors, return error response (Cloud Tasks will retry)
+- [x] Unit tests with mocked AI calls
+- [x] Cloud Tasks queue creation
+- [x] Makefile targets for deployment
 
-### Phase 3: Logging
-- [ ] Implement Cloud Storage writer
-- [ ] Write JSONL logs (partitioned by date)
-- [ ] **Error handling**: If Cloud Storage write fails, log to Cloud Logging and return (don't retry, don't block)
+**Components:**
+- **Cloud Run Service**: `email-processor` (Flask app)
+  - File: `src/gmail_ai_unsub/cloud/email_processor.py`
+  - Entry point: `cloud_run_main.py` (Flask app)
+  - Endpoint: `/process` (POST)
+- **Cloud Tasks**: Queue `email-processing` in `us-central1`
+  - Task name: `email-{email_id}` for deduplication (1-hour window)
+  - Payload: `{"email_id": "...", "trace_id": "..."}`
+- **API Key**: `ANTHROPIC_API_KEY` environment variable in Cloud Run
+- **Model**: Claude Opus 4.5 (`claude-4-5-opus`)
 
-### Phase 4: Dashboard
-- [ ] Build FastAPI app
-- [ ] Read logs from Cloud Storage
-- [ ] Create simple HTML UI (email feed)
+**Logging:**
+- `task_start`: When task begins processing
+- `classification`: Classification result with metadata (category, confidence, reason, model)
+
+### Phase 3: Action Agents (Future)
+- [ ] Route emails based on classification
+- [ ] Marketing agent (unsubscribe)
+- [ ] Newsletter agent (summarize and email)
+- [ ] Unimportant notification agent (archive)
+
+### Phase 4: Dashboard Enhancements (Future)
 - [ ] Add auto-refresh
 - [ ] Deploy to Cloud Run
+- [ ] Trace view (follow email through all stages)
+- [ ] Statistics and filtering
 
-### Phase 5: Testing
-- [ ] Test with real Gmail Watch notifications
-- [ ] Verify logs are written correctly
-- [ ] Verify dashboard shows emails
-- [ ] Test error handling
+### Phase 5: Testing & Refinement (Ongoing)
+- [x] Test with real Gmail Watch notifications
+- [x] Verify logs are written correctly
+- [x] Verify dashboard shows emails
+- [x] Test error handling
+- [x] Unit tests for Pub/Sub handler
+- [x] Unit tests for email processor
 
 ## Design Decisions (First State)
 
