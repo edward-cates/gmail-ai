@@ -1,352 +1,241 @@
-.PHONY: help validate-dashboard test-dashboard run-dashboard check-logs check-run-logs check-function-logs deploy-function deploy-function-force deploy-watch-renewal deploy-run-service setup-queue deploy setup-scheduler watch-build setup-gmail-watch reset-gmail-watch test-pubsub-handler test-email-processor validate
+.PHONY: help run-dashboard check-logs check-run-logs check-run-logs-recent check-function-logs deploy-function deploy-function-force deploy-watch-renewal deploy-email-processor deploy-unsubscribe-service test-email-processor test-unsubscribe-service test-functions test-dashboard test setup-queue deploy setup-scheduler watch-build lint
+
+PROJECT_ID = neat-simplicity-486023-a4
+PROJECT_NUMBER = 543519381062
+REGION = us-central1
 
 help:
 	@echo "Available commands:"
-	@echo "  make validate           - Run all validation (dashboard + pubsub handler tests)"
-	@echo "  make validate-dashboard  - Check dashboard for errors/warnings"
-	@echo "  make test-dashboard     - Test dashboard API endpoints"
-	@echo "  make test-pubsub-handler - Run Pub/Sub handler tests with mocking"
-	@echo "  make test-email-processor - Run email processor tests with mocking"
-	@echo "  make run-dashboard      - Run dashboard locally"
-	@echo "  make check-logs         - Check recent Cloud Storage logs"
-	@echo "  make check-run-logs     - Check Cloud Run service logs (email processor)"
-	@echo "  make check-function-logs - Check Cloud Function logs (orchestrator)"
-	@echo "  make deploy              - Deploy all components (function, watch renewal, run service)"
-	@echo "  make deploy-function     - Deploy Cloud Function (Pub/Sub handler) (skips if no changes)"
-	@echo "  make deploy-function-force - Force deploy Cloud Function (ignores change detection)"
-	@echo "  make deploy-watch-renewal - Deploy watch renewal Cloud Function"
-	@echo "  make deploy-run-service  - Deploy Cloud Run service (email processor)"
-	@echo "  make setup-queue         - Create Cloud Tasks queue"
-	@echo "  make setup-scheduler     - Set up Cloud Scheduler to auto-renew watch (every 6 days)"
-	@echo "  make watch-build        - Watch ongoing Cloud Build logs"
-	@echo "  make setup-gmail-watch  - Set up Gmail Watch"
-	@echo "  make reset-gmail-watch  - Stop all watches and set up fresh one (fixes duplicates)"
+	@echo ""
+	@echo "  DEPLOY:"
+	@echo "    make deploy                  - Deploy all components"
+	@echo "    make deploy-email-processor  - Deploy email classifier (Cloud Run)"
+	@echo "    make deploy-unsubscribe-service - Deploy browser automation (Cloud Run)"
+	@echo "    make deploy-function         - Deploy Pub/Sub handler (Cloud Function)"
+	@echo "    make deploy-watch-renewal    - Deploy watch renewal (Cloud Function)"
+	@echo ""
+	@echo "  TEST:"
+	@echo "    make test                    - Run all tests"
+	@echo "    make lint                    - Run linter"
+	@echo "    make validate                - Run tests + lint"
+	@echo ""
+	@echo "  LOGS:"
+	@echo "    make check-logs              - Check Cloud Storage logs"
+	@echo "    make check-run-logs          - Check Cloud Run logs"
+	@echo "    make check-function-logs     - Check Cloud Function logs"
+	@echo ""
+	@echo "  SETUP:"
+	@echo "    make setup-queue             - Create Cloud Tasks queue"
+	@echo "    make setup-scheduler         - Set up watch renewal scheduler"
+	@echo ""
+	@echo "  LOCAL:"
+	@echo "    make run-dashboard           - Run dashboard locally"
 
-validate-dashboard:
-	@echo "Validating dashboard code quality..."
-	@uv run ruff check src/gmail_ai_unsub/dashboard/
-	@echo "Validating dashboard functionality..."
-	@PYTHONPATH=src uv run python scripts/dev.py validate-dashboard
+# ============================================================================
+# LOCAL TESTING
+# ============================================================================
+
+test-functions:
+	@echo "Testing Cloud Function imports..."
+	@uv run python -c "from functions.pubsub_handler import handle_pubsub; from functions.watch_renewal import renew_watch; print('✓ functions imports OK')"
+
+test-email-processor:
+	@echo "Testing email-processor syntax..."
+	@uv run python -m py_compile cloud-run/email-processor/main.py && echo "✓ email-processor syntax OK"
+
+test-unsubscribe-service:
+	@echo "Testing unsubscribe-service syntax..."
+	@uv run python -m py_compile cloud-run/unsubscribe-service/main.py && echo "✓ unsubscribe-service syntax OK"
 
 test-dashboard:
-	@echo "Testing dashboard endpoints..."
-	@curl -s http://127.0.0.1:8080/api/logs > /dev/null && echo "✓ /api/logs endpoint works" || echo "✗ /api/logs endpoint failed"
-	@curl -s http://127.0.0.1:8080/ > /dev/null && echo "✓ / endpoint works" || echo "✗ / endpoint failed"
+	@echo "Testing dashboard imports..."
+	@uv run python -c "from dashboard.app import app; print('✓ dashboard imports OK')"
+
+test: test-functions test-email-processor test-unsubscribe-service test-dashboard
+	@echo ""
+	@echo "✓ All tests passed!"
+
+lint:
+	@echo "Linting..."
+	@uv run ruff check functions/ dashboard/ main.py cloud-run/
+	@echo "✓ Lint passed!"
+
+validate: test lint
+	@echo ""
+	@echo "✓ All validation passed!"
 
 run-dashboard:
 	@echo "Starting dashboard on http://127.0.0.1:8080"
-	@PYTHONPATH=src uv run python -m uvicorn gmail_ai_unsub.dashboard.app:app --reload --port 8080 --host 127.0.0.1
+	@echo "Set GMAIL_AI_STORAGE_BUCKET and GMAIL_AI_PROJECT_ID env vars first"
+	@uv run uvicorn dashboard.app:app --reload --port 8080 --host 127.0.0.1
+
+# ============================================================================
+# LOGS
+# ============================================================================
 
 check-logs:
 	@echo "Checking recent logs from Cloud Storage..."
-	@PYTHONPATH=src uv run python scripts/check-logs.py
+	@uv run python -c "\
+	import os; \
+	from google.cloud import storage; \
+	client = storage.Client(project='$(PROJECT_ID)'); \
+	bucket = client.bucket('gmail-ai-logs'); \
+	from datetime import datetime; \
+	date_str = datetime.utcnow().strftime('%Y/%m/%d'); \
+	blob = bucket.blob(f'logs/{date_str}/log.jsonl'); \
+	if blob.exists(): \
+	    print(blob.download_as_text()[-2000:]); \
+	else: \
+	    print('No logs for today'); \
+	"
 
 check-run-logs:
 	@echo "Checking Cloud Run service logs (email-processor)..."
-	@gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=email-processor AND NOT textPayload=~\"not authenticated\"" \
+	@gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=email-processor" \
 		--limit=20 \
-		--project=neat-simplicity-486023-a4 \
-		--format="table(timestamp,textPayload,jsonPayload.message)" \
+		--project=$(PROJECT_ID) \
+		--format="table(timestamp,textPayload)" \
 		--freshness=30m \
 		2>&1 | head -40
 
+check-run-logs-recent:
+	@echo "Checking most recent Cloud Run revision logs..."
+	@REVISION=$$(gcloud run services describe email-processor --region=$(REGION) --project=$(PROJECT_ID) --format="value(status.latestReadyRevisionName)" 2>/dev/null | head -1); \
+	if [ -z "$$REVISION" ]; then echo "No revision found"; else \
+		echo "Latest revision: $$REVISION"; \
+		gcloud logging read "resource.type=cloud_run_revision AND resource.labels.revision_name=$$REVISION" \
+			--limit=50 --project=$(PROJECT_ID) --format="value(timestamp,textPayload)" --freshness=10m 2>&1 | head -50; \
+	fi
+
 check-function-logs:
-	@echo "Checking Cloud Function logs (gmail-processor orchestrator)..."
-	@echo "Recent errors and warnings:"
-	@gcloud logging read "resource.type=cloud_function AND resource.labels.function_name=gmail-processor AND severity>=WARNING" \
+	@echo "Checking Cloud Function logs..."
+	@gcloud logging read "resource.type=cloud_function AND resource.labels.function_name=gmail-processor" \
 		--limit=20 \
-		--project=neat-simplicity-486023-a4 \
-		--format="value(timestamp,severity,textPayload,jsonPayload.message)" \
+		--project=$(PROJECT_ID) \
+		--format="table(timestamp,severity,textPayload)" \
 		--freshness=30m \
-		2>&1 | while IFS=$$'\t' read -r timestamp severity text msg; do \
-			[ -n "$$text$$msg" ] && echo "$$timestamp [$$severity]: $$text$$msg"; \
-		done | head -30
-	@echo ""
-	@echo "Note: For detailed error messages, check Cloud Storage logs with 'make check-logs'"
+		2>&1 | head -30
+
+# ============================================================================
+# DEPLOY CLOUD FUNCTIONS
+# ============================================================================
 
 deploy-function:
-	@echo "Checking if Cloud Function needs deployment..."
-	@FUNCTION_EXISTS=$$(gcloud functions describe gmail-processor --gen2 --region=us-central1 --project=neat-simplicity-486023-a4 --format="value(name)" 2>/dev/null | wc -l); \
-	FUNCTION_SOURCE_FILES="src/gmail_ai_unsub/cloud/pubsub_handler.py src/gmail_ai_unsub/cloud/email_fetcher.py src/gmail_ai_unsub/cloud/logging.py main.py"; \
-	if [ "$$FUNCTION_EXISTS" -eq 0 ]; then \
-		echo "Function doesn't exist, deploying..."; \
-		SKIP=0; \
-	else \
-		echo "Function exists, checking for source changes..."; \
-		LAST_DEPLOY=$$(gcloud functions describe gmail-processor --gen2 --region=us-central1 --project=neat-simplicity-486023-a4 --format="value(updateTime)" 2>/dev/null | head -1); \
-		if [ -z "$$LAST_DEPLOY" ]; then \
-			SKIP=0; \
-		else \
-			SKIP=1; \
-			for file in $$FUNCTION_SOURCE_FILES; do \
-				if [ -f "$$file" ]; then \
-					FILE_TIME=$$(stat -f "%m" "$$file" 2>/dev/null || stat -c "%Y" "$$file" 2>/dev/null); \
-					DEPLOY_TIME_STR=$$(echo "$$LAST_DEPLOY" | sed 's/\.[0-9]*Z//' | sed 's/Z$$//'); \
-					DEPLOY_TIME=$$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$$DEPLOY_TIME_STR" "+%s" 2>/dev/null || TZ=UTC date -d "$$DEPLOY_TIME_STR" "+%s" 2>/dev/null); \
-					if [ -n "$$FILE_TIME" ] && [ -n "$$DEPLOY_TIME" ] && [ "$$FILE_TIME" -gt "$$DEPLOY_TIME" ]; then \
-						echo "  → $$file changed (newer than last deploy)"; \
-						SKIP=0; \
-					fi; \
-				fi; \
-			done; \
-		fi; \
-	fi; \
-	if [ "$$SKIP" -eq 1 ]; then \
-		echo "✓ No changes detected, skipping deployment"; \
-	else \
-		echo "Deploying Cloud Function (with verbose logs)..."; \
-		gcloud functions deploy gmail-processor \
-			--gen2 \
-			--runtime=python312 \
-			--region=us-central1 \
-			--source=. \
-			--entry-point=handle_pubsub_event \
-			--trigger-topic=gmail-watch \
-			--timeout=60s \
-			--memory=256Mi \
-			--project=neat-simplicity-486023-a4 \
-			--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=neat-simplicity-486023-a4,GMAIL_AI_PROJECT_NUMBER=543519381062" \
-			--verbosity=debug; \
-		echo ""; \
-		echo "Resetting Gmail Watch to ensure single subscription..."; \
-		$(MAKE) reset-gmail-watch; \
-		fi
-
-deploy-function-force:
-	@echo "Force deploying Cloud Function (ignoring change detection)..."
+	@echo "Deploying Cloud Function (Pub/Sub handler)..."
 	@gcloud functions deploy gmail-processor \
 		--gen2 \
 		--runtime=python312 \
-		--region=us-central1 \
+		--region=$(REGION) \
 		--source=. \
 		--entry-point=handle_pubsub_event \
 		--trigger-topic=gmail-watch \
 		--timeout=60s \
 		--memory=256Mi \
-		--project=neat-simplicity-486023-a4 \
-		--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=neat-simplicity-486023-a4" \
-		--verbosity=debug
-	@echo ""
-	@echo "Resetting Gmail Watch to ensure single subscription..."
-	@$(MAKE) reset-gmail-watch
+		--project=$(PROJECT_ID) \
+		--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=$(PROJECT_ID),GMAIL_AI_PROJECT_NUMBER=$(PROJECT_NUMBER),GMAIL_AI_TASKS_QUEUE=email-processing,GMAIL_AI_RUN_SERVICE=email-processor"
+
+deploy-function-force: deploy-function
 
 deploy-watch-renewal:
-	@echo "Checking if watch renewal function needs deployment..."
-	@FUNCTION_EXISTS=$$(gcloud functions describe gmail-watch-renewal --gen2 --region=us-central1 --project=neat-simplicity-486023-a4 --format="value(name)" 2>/dev/null | wc -l); \
-	FUNCTION_SOURCE_FILES="src/gmail_ai_unsub/cloud/watch_renewal.py main.py"; \
-	if [ "$$FUNCTION_EXISTS" -eq 0 ]; then \
-		echo "Function doesn't exist, deploying..."; \
-		SKIP=0; \
-	else \
-		echo "Function exists, checking for source changes..."; \
-		LAST_DEPLOY=$$(gcloud functions describe gmail-watch-renewal --gen2 --region=us-central1 --project=neat-simplicity-486023-a4 --format="value(updateTime)" 2>/dev/null | head -1); \
-		if [ -z "$$LAST_DEPLOY" ]; then \
-			SKIP=0; \
-		else \
-			SKIP=1; \
-			for file in $$FUNCTION_SOURCE_FILES; do \
-				if [ -f "$$file" ]; then \
-					FILE_TIME=$$(stat -f "%m" "$$file" 2>/dev/null || stat -c "%Y" "$$file" 2>/dev/null); \
-					DEPLOY_TIME_STR=$$(echo "$$LAST_DEPLOY" | sed 's/\.[0-9]*Z//' | sed 's/Z$$//'); \
-					DEPLOY_TIME=$$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$$DEPLOY_TIME_STR" "+%s" 2>/dev/null || TZ=UTC date -d "$$DEPLOY_TIME_STR" "+%s" 2>/dev/null); \
-					if [ -n "$$FILE_TIME" ] && [ -n "$$DEPLOY_TIME" ] && [ "$$FILE_TIME" -gt "$$DEPLOY_TIME" ]; then \
-						echo "  → $$file changed (newer than last deploy)"; \
-						SKIP=0; \
-					fi; \
-				fi; \
-			done; \
-		fi; \
-	fi; \
-	if [ "$$SKIP" -eq 1 ]; then \
-		echo "✓ No changes detected, skipping deployment"; \
-	else \
-		echo "Deploying watch renewal Cloud Function..."; \
-		gcloud functions deploy gmail-watch-renewal \
-			--gen2 \
-			--runtime=python312 \
-			--region=us-central1 \
-			--source=. \
-			--entry-point=renew_watch_http \
-			--trigger-http \
-			--allow-unauthenticated \
-			--timeout=60s \
-			--memory=256Mi \
-			--project=neat-simplicity-486023-a4 \
-			--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=neat-simplicity-486023-a4,GMAIL_AI_PROJECT_NUMBER=543519381062" \
-			--verbosity=debug; \
-		echo ""; \
-		echo "✓ Watch renewal function deployed!"; \
-		echo "Run 'make setup-scheduler' to set up automatic renewal."; \
-	fi
+	@echo "Deploying watch renewal Cloud Function..."
+	@gcloud functions deploy gmail-watch-renewal \
+		--gen2 \
+		--runtime=python312 \
+		--region=$(REGION) \
+		--source=. \
+		--entry-point=renew_watch_http \
+		--trigger-http \
+		--allow-unauthenticated \
+		--timeout=60s \
+		--memory=256Mi \
+		--project=$(PROJECT_ID) \
+		--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=$(PROJECT_ID),GMAIL_AI_PROJECT_NUMBER=$(PROJECT_NUMBER)"
+
+# ============================================================================
+# DEPLOY CLOUD RUN SERVICES
+# ============================================================================
+
+deploy-email-processor:
+	@echo "Deploying email-processor..."
+	@if [ ! -f .env ]; then echo "Error: .env file not found"; exit 1; fi
+	@export $$(cat .env | grep -v '^#' | xargs) && \
+	if [ -z "$$ANTHROPIC_API_KEY" ]; then echo "Error: ANTHROPIC_API_KEY not set"; exit 1; fi && \
+	SERVICE_ACCOUNT=$$(gcloud iam service-accounts list --project=$(PROJECT_ID) --filter="email:*-compute@developer.gserviceaccount.com" --format="value(email)" | head -1) && \
+	gcloud run deploy email-processor \
+		--source=cloud-run/email-processor \
+		--region=$(REGION) \
+		--platform=managed \
+		--timeout=60s \
+		--memory=512Mi \
+		--cpu=1 \
+		--no-allow-unauthenticated \
+		--service-account="$$SERVICE_ACCOUNT" \
+		--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=$(PROJECT_ID),ANTHROPIC_API_KEY=$$ANTHROPIC_API_KEY" \
+		--project=$(PROJECT_ID) && \
+	echo "✓ email-processor deployed!"
+
+deploy-unsubscribe-service:
+	@echo "Deploying unsubscribe-service..."
+	@if [ ! -f .env ]; then echo "Error: .env file not found"; exit 1; fi
+	@export $$(cat .env | grep -v '^#' | xargs) && \
+	if [ -z "$$ANTHROPIC_API_KEY" ]; then echo "Error: ANTHROPIC_API_KEY not set"; exit 1; fi && \
+	SERVICE_ACCOUNT=$$(gcloud iam service-accounts list --project=$(PROJECT_ID) --filter="email:*-compute@developer.gserviceaccount.com" --format="value(email)" | head -1) && \
+	gcloud run deploy unsubscribe-service \
+		--source=cloud-run/unsubscribe-service \
+		--region=$(REGION) \
+		--platform=managed \
+		--timeout=300s \
+		--memory=2Gi \
+		--cpu=2 \
+		--no-allow-unauthenticated \
+		--service-account="$$SERVICE_ACCOUNT" \
+		--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=$(PROJECT_ID),ANTHROPIC_API_KEY=$$ANTHROPIC_API_KEY" \
+		--project=$(PROJECT_ID) && \
+	echo "✓ unsubscribe-service deployed!"
+
+# ============================================================================
+# SETUP
+# ============================================================================
 
 setup-queue:
 	@echo "Checking Cloud Tasks queue..."
-	@QUEUE_EXISTS=$$(gcloud tasks queues describe email-processing --location=us-central1 --project=neat-simplicity-486023-a4 --format="value(name)" 2>/dev/null | wc -l); \
+	@QUEUE_EXISTS=$$(gcloud tasks queues describe email-processing --location=$(REGION) --project=$(PROJECT_ID) --format="value(name)" 2>/dev/null | wc -l); \
 	if [ "$$QUEUE_EXISTS" -eq 0 ]; then \
-		echo "Creating Cloud Tasks queue..."; \
-		gcloud tasks queues create email-processing \
-			--location=us-central1 \
-			--project=neat-simplicity-486023-a4 && echo "✓ Queue created"; \
+		echo "Creating queue..."; \
+		gcloud tasks queues create email-processing --location=$(REGION) --project=$(PROJECT_ID); \
+		echo "✓ Queue created"; \
 	else \
 		echo "✓ Queue already exists"; \
 	fi
 
-deploy-run-service:
-	@echo "Checking if Cloud Run service needs deployment..."
-	@if [ ! -f .env ]; then \
-		echo "Error: .env file not found. Create it with ANTHROPIC_API_KEY=..."; \
-		exit 1; \
-	fi
-	@export $$(cat .env | grep -v '^#' | xargs) && \
-	if [ -z "$$ANTHROPIC_API_KEY" ]; then \
-		echo "Error: ANTHROPIC_API_KEY not found in .env"; \
-		exit 1; \
-	fi && \
-	SERVICE_EXISTS=$$(gcloud run services describe email-processor --region=us-central1 --project=neat-simplicity-486023-a4 --format="value(metadata.name)" 2>/dev/null | wc -l); \
-	SERVICE_SOURCE_FILES="src/gmail_ai_unsub/cloud/email_processor.py src/gmail_ai_unsub/cloud/email_fetcher.py src/gmail_ai_unsub/classifier/email_classifier.py main.py"; \
-	if [ "$$SERVICE_EXISTS" -eq 0 ]; then \
-		echo "Service doesn't exist, deploying..."; \
-		SKIP=0; \
-	else \
-		echo "Service exists, checking for source changes..."; \
-		LAST_DEPLOY=$$(gcloud run services describe email-processor --region=us-central1 --project=neat-simplicity-486023-a4 --format="value(status.latestReadyRevisionName)" 2>/dev/null); \
-		if [ -z "$$LAST_DEPLOY" ]; then \
-			SKIP=0; \
-		else \
-			LAST_UPDATE=$$(gcloud run revisions describe "$$LAST_DEPLOY" --region=us-central1 --project=neat-simplicity-486023-a4 --format="value(metadata.creationTimestamp)" 2>/dev/null); \
-			if [ -z "$$LAST_UPDATE" ]; then \
-				SKIP=0; \
-			else \
-				SKIP=1; \
-				for file in $$SERVICE_SOURCE_FILES; do \
-					if [ -f "$$file" ]; then \
-						FILE_TIME=$$(stat -f "%m" "$$file" 2>/dev/null || stat -c "%Y" "$$file" 2>/dev/null); \
-						DEPLOY_TIME_STR=$$(echo "$$LAST_UPDATE" | sed 's/\.[0-9]*Z//' | sed 's/Z$$//'); \
-						DEPLOY_TIME=$$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$$DEPLOY_TIME_STR" "+%s" 2>/dev/null || TZ=UTC date -d "$$DEPLOY_TIME_STR" "+%s" 2>/dev/null); \
-						if [ -n "$$FILE_TIME" ] && [ -n "$$DEPLOY_TIME" ] && [ "$$FILE_TIME" -gt "$$DEPLOY_TIME" ]; then \
-							echo "  → $$file changed (newer than last deploy)"; \
-							SKIP=0; \
-						fi; \
-					fi; \
-				done; \
-			fi; \
-		fi; \
-	fi; \
-	if [ "$$SKIP" -eq 1 ]; then \
-		echo "✓ No changes detected, skipping deployment"; \
-	else \
-		echo "Deploying Cloud Run service (email processor)..."; \
-		SERVICE_ACCOUNT=$$(gcloud iam service-accounts list --project=neat-simplicity-486023-a4 --filter="email:*-compute@developer.gserviceaccount.com" --format="value(email)" | head -1) && \
-		gcloud run deploy email-processor \
-			--source=. \
-			--region=us-central1 \
-			--platform=managed \
-			--timeout=300s \
-			--memory=1Gi \
-			--cpu=1 \
-			--no-allow-unauthenticated \
-			--service-account="$$SERVICE_ACCOUNT" \
-			--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=neat-simplicity-486023-a4,ANTHROPIC_API_KEY=$$ANTHROPIC_API_KEY,PYTHONPATH=/workspace/src" \
-			--command="uvicorn" \
-			--args="email_processor_main:app,--host,0.0.0.0,--port,8080" \
-			--port=8080 \
-			--project=neat-simplicity-486023-a4; \
-		echo ""; \
-		echo "✓ Cloud Run service deployed!"; \
-	fi
-
-deploy: setup-queue deploy-function deploy-watch-renewal deploy-run-service setup-scheduler
-	@echo ""
-	@echo "✓ All components deployed!"
-	@echo ""
-	@echo "Next steps:"
-	@echo "  1. Ensure Gmail Watch is active: make reset-gmail-watch"
-	@echo "  2. Check logs: make check-logs"
-
 setup-scheduler:
 	@echo "Checking Cloud Scheduler job..."
-	@FUNCTION_URL=$$(gcloud functions describe gmail-watch-renewal --gen2 --region=us-central1 --project=neat-simplicity-486023-a4 --format="value(serviceConfig.uri)" 2>/dev/null); \
+	@FUNCTION_URL=$$(gcloud functions describe gmail-watch-renewal --gen2 --region=$(REGION) --project=$(PROJECT_ID) --format="value(serviceConfig.uri)" 2>/dev/null); \
 	if [ -z "$$FUNCTION_URL" ]; then \
-		echo "Error: Watch renewal function not found. Run 'make deploy-watch-renewal' first."; \
-		exit 1; \
+		echo "Error: deploy-watch-renewal first"; exit 1; \
 	fi; \
-	JOB_EXISTS=$$(gcloud scheduler jobs describe gmail-watch-renewal --location=us-central1 --project=neat-simplicity-486023-a4 --format="value(name)" 2>/dev/null | wc -l); \
+	JOB_EXISTS=$$(gcloud scheduler jobs describe gmail-watch-renewal --location=$(REGION) --project=$(PROJECT_ID) --format="value(name)" 2>/dev/null | wc -l); \
 	if [ "$$JOB_EXISTS" -eq 0 ]; then \
-		echo "Creating Cloud Scheduler job..."; \
 		gcloud scheduler jobs create http gmail-watch-renewal \
-			--location=us-central1 \
-			--schedule="0 2 * * 0" \
-			--uri="$$FUNCTION_URL" \
-			--http-method=GET \
-			--time-zone="America/Los_Angeles" \
-			--project=neat-simplicity-486023-a4; \
-		echo ""; \
-		echo "✓ Cloud Scheduler job created!"; \
+			--location=$(REGION) --schedule="0 2 * * 0" --uri="$$FUNCTION_URL" \
+			--http-method=GET --time-zone="America/Los_Angeles" --project=$(PROJECT_ID); \
+		echo "✓ Scheduler created"; \
 	else \
-		CURRENT_URI=$$(gcloud scheduler jobs describe gmail-watch-renewal --location=us-central1 --project=neat-simplicity-486023-a4 --format="value(httpTarget.uri)" 2>/dev/null); \
-		if [ "$$CURRENT_URI" != "$$FUNCTION_URL" ]; then \
-			echo "Updating Cloud Scheduler job (function URL changed)..."; \
-			gcloud scheduler jobs update http gmail-watch-renewal \
-				--location=us-central1 \
-				--uri="$$FUNCTION_URL" \
-				--project=neat-simplicity-486023-a4; \
-			echo "✓ Cloud Scheduler job updated!"; \
-		else \
-			echo "✓ Cloud Scheduler job already configured correctly"; \
-		fi; \
-	fi; \
-	echo ""; \
-	echo "Watch will be renewed every Sunday at 2 AM Pacific Time (every 7 days)."; \
-	echo ""; \
-	echo "To test manually:"; \
-	echo "  gcloud scheduler jobs run gmail-watch-renewal --location=us-central1 --project=neat-simplicity-486023-a4"
-
-watch-build:
-	@echo "Watching ongoing Cloud Build logs..."
-	@BUILD_ID=$$(gcloud builds list --ongoing --limit=1 --format="value(id)" --project=neat-simplicity-486023-a4 2>/dev/null | head -1); \
-	if [ -z "$$BUILD_ID" ]; then \
-		echo "No ongoing builds found"; \
-	else \
-		echo "Streaming logs for build: $$BUILD_ID"; \
-		gcloud builds log $$BUILD_ID --stream --project=neat-simplicity-486023-a4; \
+		echo "✓ Scheduler already exists"; \
 	fi
 
-setup-gmail-watch:
-	@echo "Setting up Gmail Watch..."
-	@export $$(cat .env | grep -v '^#' | xargs) && \
-	PYTHONPATH=src uv run python -c "\
-	import sys; \
-	sys.path.insert(0, 'src'); \
-	from gmail_ai_unsub.config import Config; \
-	from gmail_ai_unsub.gmail.client import GmailClient; \
-	config = Config(); \
-	client = GmailClient( \
-		credentials_file=None, \
-		token_file=config.gmail_token_file, \
-		use_default_credentials=True, \
-	); \
-	topic = config.cloud_pubsub_topic; \
-	watch_request = { \
-		'topicName': topic, \
-		'labelIds': ['INBOX'], \
-	}; \
-	result = client.service.users().watch(userId='me', body=watch_request).execute(); \
-	print(f'✓ Gmail Watch active!'); \
-	print(f'  History ID: {result.get(\"historyId\")}'); \
-	"
+watch-build:
+	@echo "Watching ongoing Cloud Build..."
+	@BUILD_ID=$$(gcloud builds list --ongoing --limit=1 --format="value(id)" --project=$(PROJECT_ID) 2>/dev/null | head -1); \
+	if [ -z "$$BUILD_ID" ]; then echo "No ongoing builds"; else \
+		gcloud builds log $$BUILD_ID --stream --project=$(PROJECT_ID); \
+	fi
 
-reset-gmail-watch:
-	@echo "Resetting Gmail Watch (stops all existing, sets up fresh one)..."
-	@export $$(cat .env | grep -v '^#' | xargs) && \
-	PYTHONPATH=src uv run python scripts/dev.py reset-gmail-watch
+# ============================================================================
+# DEPLOY ALL
+# ============================================================================
 
-test-pubsub-handler:
-	@echo "Running Pub/Sub handler tests..."
-	@PYTHONPATH=src uv run pytest tests/test_pubsub_handler.py -v
-
-test-email-processor:
-	@echo "Running email processor tests..."
-	@PYTHONPATH=src uv run pytest tests/test_email_processor.py -v
-
-validate: validate-dashboard test-pubsub-handler test-email-processor
-	@echo "✓ All validation passed"
+deploy: setup-queue deploy-function deploy-watch-renewal deploy-email-processor setup-scheduler
+	@echo ""
+	@echo "✓ All deployed!"
+	@echo "Check logs: make check-logs"

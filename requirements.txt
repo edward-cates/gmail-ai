@@ -1,33 +1,7 @@
-# Cloud Function dependencies
-# This file is used for Cloud Functions deployment
-# Main dependencies are in pyproject.toml
-
-# Core dependencies (from pyproject.toml)
-beautifulsoup4>=4.12.0
-click>=8.1.0
+# Cloud Functions dependencies
 google-api-python-client>=2.150.0
 google-auth>=2.25.0
 google-auth-oauthlib>=1.2.0
-langchain>=0.3.0
-langchain-core>=0.3.0
-langchain-google-genai>=2.0.0
-langchain-anthropic>=0.3.0
-langchain-openai>=0.2.0
-browser-use>=0.4.0
-playwright>=1.48.0
-platformdirs>=4.0.0
-pydantic>=2.12.0
-python-dotenv>=1.0.0
-questionary>=2.0.0
-requests>=2.32.0
-rich>=13.0.0
-
-# Cloud-specific dependencies
 google-cloud-storage>=2.14.0
 google-cloud-tasks>=2.18.0
-google-cloud-run>=0.10.0
-functions-framework>=3.5.0
-fastapi>=0.115.0
-jinja2>=3.1.0
-uvicorn>=0.32.0
 flask>=3.0.0

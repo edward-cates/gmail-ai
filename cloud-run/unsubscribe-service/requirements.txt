@@ -1,0 +1,27 @@
+# Unsubscribe Service - AI browser automation for complex unsubscribe pages
+# Heavy service with browser-use and playwright
+
+# Web framework
+fastapi>=0.115.0
+uvicorn>=0.32.0
+
+# HTTP unsubscribe (RFC 8058)
+requests>=2.32.0
+
+# HTML parsing for link extraction
+beautifulsoup4>=4.12.0
+
+# AI browser automation
+browser-use>=0.2.0
+playwright>=1.48.0
+
+# LLM providers (any one of these)
+langchain-anthropic>=0.3.0
+langchain-openai>=0.2.0
+langchain-google-genai>=2.0.0
+
+# Data validation
+pydantic>=2.12.0
+
+# Cloud logging
+google-cloud-storage>=2.14.0

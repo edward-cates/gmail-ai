@@ -1,172 +1,31 @@
-[build-system]
-requires = ["uv-build"]
-build-backend = "uv_build"
-
 [project]
-name = "gmail-ai-unsub"
-version = "0.2.1"
-description = "AI-powered tool to identify and unsubscribe from marketing emails in Gmail"
-readme = "README.md"
+name = "gmail-ai-processor"
+version = "0.1.0"
+description = "AI-powered email classification and processing for Gmail"
 requires-python = ">=3.12"
-license = {text = "MIT"}
-authors = [
-    {name = "Zac Bowling", email = "zac@zacbowling.com"},
-]
-maintainers = [
-    {name = "Zac Bowling", email = "zac@zacbowling.com"},
-]
-keywords = [
-    "gmail",
-    "email",
-    "unsubscribe",
-    "ai",
-    "llm",
-    "marketing",
-    "email-management",
-    "email-cleanup",
-    "email-organizer",
-    "automation",
-    "langchain",
-    "gemini",
-    "claude",
-    "openai",
-    "browser-automation",
-    "email-classification",
-    "gmail-api",
-    "productivity",
-    "cli",
-    "python",
-]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
-    "Topic :: Communications :: Email",
-    "Topic :: Communications :: Email :: Filters",
-    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
-    "Topic :: Office/Business",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-    "Topic :: Utilities",
-    "Typing :: Typed",
-]
 dependencies = [
-    "beautifulsoup4>=4.12.0",
-    "click>=8.1.0",
+    # Cloud Functions deps
     "google-api-python-client>=2.150.0",
     "google-auth>=2.25.0",
     "google-auth-oauthlib>=1.2.0",
-    "langchain>=0.3.0",
-    "langchain-core>=0.3.0",
-    "langchain-google-genai>=2.0.0",
-    "langchain-anthropic>=0.3.0",
-    "langchain-openai>=0.2.0",
-    "browser-use>=0.4.0",
-    "playwright>=1.48.0",
-    "platformdirs>=4.0.0",
-    "pydantic>=2.12.0",
-    "python-dotenv>=1.0.0",
-    "questionary>=2.0.0",
-    "requests>=2.32.0",
-    "rich>=13.0.0",
     "google-cloud-storage>=2.14.0",
+    "google-cloud-tasks>=2.18.0",
+    "flask>=3.0.0",
+    # Dashboard deps
     "fastapi>=0.115.0",
     "jinja2>=3.1.0",
     "uvicorn>=0.32.0",
 ]
-[project.urls]
-Homepage = "https://zacbowling.com"
-Repository = "https://github.com/zbowling/gmail-ai-unsub"
-Documentation = "https://github.com/zbowling/gmail-ai-unsub#readme"
-"Bug Tracker" = "https://github.com/zbowling/gmail-ai-unsub/issues"
-Changelog = "https://github.com/zbowling/gmail-ai-unsub/blob/main/CHANGELOG.md"
-Sponsor = "https://github.com/sponsors/zbowling"
-"Buy Me a Coffee" = "https://buymeacoffee.com/zbowling"
-Thanks = "https://thanks.dev/u/gh/zbowling"
-
-[project.optional-dependencies]
-dev = [
-    "pre-commit>=3.7.0",
-    "pytest>=8.3.0",
-    "pytest-asyncio>=0.24.0",
-    "ruff>=0.6.0",
-    "mypy>=1.11.0",
-]
-
-[project.scripts]
-gmail-unsub = "gmail_ai_unsub.cli:main"
-
-[tool.ruff]
-line-length = 100
-target-version = "py313"
-
-[tool.ruff.lint]
-select = [
-    "E",  # pycodestyle errors
-    "W",  # pycodestyle warnings
-    "F",  # pyflakes
-    "I",  # isort
-    "B",  # flake8-bugbear
-    "C4", # flake8-comprehensions
-    "UP", # pyupgrade
-]
-ignore = [
-    "E501",  # line too long (handled by formatter)
-]
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-
-[tool.mypy]
-python_version = "3.13"
-warn_return_any = false
-warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-
-[[tool.mypy.overrides]]
-module = [
-    "browser_use.*",
-    "playwright.*",
-    "googleapiclient.*",
-    "google_auth_oauthlib.*",
-    "requests.*",
-]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "gmail_ai_unsub.gmail.auth"
-warn_unused_ignores = false
-
-[tool.pyrefly]
-python-version = "3.13.0"
-ignore-missing-imports = [
-    "browser_use.*",
-    "playwright.*",
-    "googleapiclient.*",
-    "google_auth_oauthlib.*",
-    "requests.*",
-]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-asyncio_mode = "auto"
 
 [dependency-groups]
 dev = [
-    "ty>=0.0.1a29",
+    "ruff>=0.6.0",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP"]
+ignore = ["E501"]
