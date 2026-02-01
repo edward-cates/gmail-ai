@@ -133,7 +133,7 @@ def classify_email(subject: str, sender: str, body: str) -> dict:
     prompt = f"""Classify this email into one of these categories:
 - marketing: Promotional emails, sales, ads
 - newsletter: Regular content updates, blogs, news digests
-- unimportant_notification: Low-value automated alerts, login notices
+- noti: Unimportant and noisy notifications (e.g., social media likes, app updates, automated system alerts)
 - other: Everything else (personal emails, important notifications)
 
 Email:
@@ -194,13 +194,13 @@ def main():
 
     log_structured(trace_id, email_id, "classification", "success", classification)
 
-    # ACTION: If marketing, apply label and archive
+    # ACTION: If marketing or noti, apply label and archive
     category = classification.get("category", "other")
-    if category == "marketing":
+    if category in ["marketing", "noti"]:
         try:
-            apply_label_and_archive(service, email_id, "marketing")
-            log_structured(trace_id, email_id, "action", "success", {"action": "label_and_archive", "label": "marketing"})
-            logger.info(f"Applied 'marketing' label and archived {email_id}")
+            apply_label_and_archive(service, email_id, category)
+            log_structured(trace_id, email_id, "action", "success", {"action": "label_and_archive", "label": category})
+            logger.info(f"Applied '{category}' label and archived {email_id}")
         except Exception as e:
             logger.error(f"Failed to apply label/archive: {e}")
             log_structured(trace_id, email_id, "action", "failure", {"error": str(e)})
