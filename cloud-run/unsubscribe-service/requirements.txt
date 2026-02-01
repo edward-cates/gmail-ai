@@ -1,10 +1,5 @@
 # Unsubscribe Service - AI browser automation for complex unsubscribe pages
-# Heavy service with browser-use and playwright
-
-# Web framework
-fastapi>=0.115.0
-uvicorn>=0.32.0
-gunicorn>=21.0.0
+# Cloud Run Job with browser-use and playwright
 
 # HTTP unsubscribe (RFC 8058)
 requests>=2.32.0

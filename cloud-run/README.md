@@ -1,8 +1,8 @@
-# Cloud Run Services
+# Cloud Run Jobs
 
-Each service is standalone with its own `main.py`, `Procfile`, and `requirements.txt`.
+Each job is standalone with its own `main.py`, `Procfile`, and `requirements.txt`.
 
-## Services
+## Jobs
 
 ### email-processor (lightweight)
 Simple classifier: LOG → CLASSIFY → LOG
@@ -23,12 +23,22 @@ AI browser automation for complex unsubscribe pages
 ```
 cloud-run/
 ├── email-processor/
-│   ├── main.py           # FastAPI app
-│   ├── Procfile          # uvicorn main:app
+│   ├── main.py           # Script (reads env vars)
+│   ├── Procfile          # web: python3 main.py
 │   └── requirements.txt
 ├── unsubscribe-service/
-│   ├── main.py           # FastAPI app  
-│   ├── Procfile          # uvicorn main:app
+│   ├── main.py           # Script (reads env vars)
+│   ├── Procfile          # web: python3 main.py
 │   └── requirements.txt
 └── README.md
 ```
+
+## How Jobs Work
+
+Jobs are triggered by Cloud Functions via the Cloud Run Jobs API. Each execution:
+1. Reads configuration from environment variables
+2. Processes the task
+3. Logs results to Cloud Storage
+4. Exits with 0 (success) or 1 (failure)
+
+No HTTP servers, no request handling—just run and exit.

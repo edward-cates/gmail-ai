@@ -163,27 +163,26 @@ deploy-email-processor:
 	echo "✓ email-processor job deployed!"
 
 # ============================================================================
-# DEPLOY CLOUD RUN SERVICE (unsubscribe - future)
+# DEPLOY CLOUD RUN JOB (unsubscribe - heavy)
 # ============================================================================
 
 deploy-unsubscribe-service:
-	@echo "Deploying unsubscribe-service..."
+	@echo "Deploying unsubscribe-service job..."
 	@if [ ! -f .env ]; then echo "Error: .env file not found"; exit 1; fi
 	@export $$(cat .env | grep -v '^#' | xargs) && \
 	if [ -z "$$ANTHROPIC_API_KEY" ]; then echo "Error: ANTHROPIC_API_KEY not set"; exit 1; fi && \
 	SERVICE_ACCOUNT=$$(gcloud iam service-accounts list --project=$(PROJECT_ID) --filter="email:*-compute@developer.gserviceaccount.com" --format="value(email)" | head -1) && \
-	gcloud run deploy unsubscribe-service \
+	gcloud run jobs deploy unsubscribe-service \
 		--source=cloud-run/unsubscribe-service \
 		--region=$(REGION) \
-		--platform=managed \
-		--timeout=300s \
+		--task-timeout=300s \
 		--memory=2Gi \
 		--cpu=2 \
-		--no-allow-unauthenticated \
+		--max-retries=1 \
 		--service-account="$$SERVICE_ACCOUNT" \
 		--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=$(PROJECT_ID),ANTHROPIC_API_KEY=$$ANTHROPIC_API_KEY" \
 		--project=$(PROJECT_ID) && \
-	echo "✓ unsubscribe-service deployed!"
+	echo "✓ unsubscribe-service job deployed!"
 
 # ============================================================================
 # SETUP

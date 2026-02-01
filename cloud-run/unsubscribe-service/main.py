@@ -1,6 +1,6 @@
 """Unsubscribe Service - AI-powered browser automation for email unsubscription.
 
-This service handles the heavy lifting: when emails can't be unsubscribed via
+Cloud Run Job that handles the heavy lifting: when emails can't be unsubscribed via
 simple HTTP POST or mailto, this service uses AI browser automation to navigate
 complex unsubscribe pages with dark patterns.
 
@@ -8,48 +8,31 @@ Three unsubscribe methods:
 1. RFC 8058 One-Click POST (fastest, ~1s)
 2. Mailto email (fast, ~2-3s)
 3. AI Browser Automation (powerful, ~10-60s)
+
+Environment variables (set by job execution):
+- EMAIL_ID: The email ID to unsubscribe from
+- TRACE_ID: Trace ID for logging
+- UNSUBSCRIBE_URL: URL to unsubscribe from
+- HAS_ONE_CLICK_POST: "true" if RFC 8058 is supported
+- HEADERS_JSON: JSON array of email headers
+- BODY_HTML: HTML body content (optional)
 """
 
+import asyncio
 import json
 import logging
 import os
 import re
+import sys
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from google.cloud import storage
-from pydantic import BaseModel
 
-app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-# ===========================================================================
-# Data Models
-# ===========================================================================
-
-
-class UnsubscribeLink(BaseModel):
-    """Represents an extracted unsubscribe link."""
-    email_id: str
-    link_url: str | None = None
-    mailto_address: str | None = None
-    list_unsubscribe_header: str | None = None
-    source: str = "unknown"  # "header" or "body"
-    status: str = "pending"
-    error: str | None = None
-
-
-class UnsubscribeResult(BaseModel):
-    """Result of an unsubscribe attempt."""
-    success: bool
-    method: str  # "rfc8058", "mailto", "browser"
-    error: str | None = None
 
 
 # ===========================================================================
@@ -63,9 +46,10 @@ def log_to_storage(
     stage: str,
     result: str = "success",
     metadata: dict | None = None,
-) -> None:
+) -> bool:
     """Log to Cloud Storage as JSONL."""
     bucket_name = os.getenv("GMAIL_AI_STORAGE_BUCKET", "gmail-ai-logs")
+    project_id = os.getenv("GMAIL_AI_PROJECT_ID")
 
     log_entry = {
         "timestamp": datetime.now(UTC).isoformat(),
@@ -77,12 +61,10 @@ def log_to_storage(
     }
 
     try:
-        project_id = os.getenv("GMAIL_AI_PROJECT_ID")
         client = storage.Client(project=project_id)
         bucket = client.bucket(bucket_name)
-
         now = datetime.now(UTC)
-        blob_path = f"logs/{now.strftime('%Y/%m/%d')}/{now.strftime('%H')}-{trace_id}.jsonl"
+        blob_path = f"logs/{now.strftime('%Y/%m/%d')}/log.jsonl"
         blob = bucket.blob(blob_path)
 
         existing = ""
@@ -90,9 +72,11 @@ def log_to_storage(
             existing = blob.download_as_text()
 
         blob.upload_from_string(existing + json.dumps(log_entry) + "\n")
-        logger.info(f"Logged to {blob_path}: {stage}")
+        logger.info(f"Logged: {stage} - {result}")
+        return True
     except Exception as e:
         logger.error(f"Failed to log to storage: {e}")
+        return False
 
 
 # ===========================================================================
@@ -109,7 +93,6 @@ def validate_url(url: str) -> bool:
     if not parsed.scheme or not parsed.netloc:
         return False
 
-    # Check for truncated query parameters
     if url.rstrip().endswith("=") or url.rstrip().endswith("?"):
         return False
 
@@ -119,7 +102,7 @@ def validate_url(url: str) -> bool:
     return True
 
 
-def extract_list_unsubscribe_header(headers: list[dict]) -> UnsubscribeLink | None:
+def extract_list_unsubscribe_header(headers: list[dict]) -> dict | None:
     """Extract List-Unsubscribe header from email headers."""
     list_unsubscribe = None
 
@@ -135,7 +118,6 @@ def extract_list_unsubscribe_header(headers: list[dict]) -> UnsubscribeLink | No
     urls = []
     mailto_addresses = []
 
-    # Extract URLs from angle brackets
     url_pattern = r"<([^>]+)>"
     matches = re.findall(url_pattern, list_unsubscribe)
     for match in matches:
@@ -145,7 +127,6 @@ def extract_list_unsubscribe_header(headers: list[dict]) -> UnsubscribeLink | No
         elif match.startswith("http://") or match.startswith("https://"):
             urls.append(match)
 
-    # Also check for URLs not in angle brackets
     if not matches:
         list_unsubscribe_clean = list_unsubscribe.replace(" ", "")
         url_pattern = r"(https?://[^\s,>]+|mailto:[^\s,>]+)"
@@ -157,20 +138,16 @@ def extract_list_unsubscribe_header(headers: list[dict]) -> UnsubscribeLink | No
                 urls.append(match)
 
     if urls:
-        return UnsubscribeLink(
-            email_id="",
-            link_url=urls[0],
-            mailto_address=mailto_addresses[0] if mailto_addresses else None,
-            list_unsubscribe_header=list_unsubscribe,
-            source="header",
-        )
+        return {
+            "link_url": urls[0],
+            "mailto_address": mailto_addresses[0] if mailto_addresses else None,
+            "source": "header",
+        }
     elif mailto_addresses:
-        return UnsubscribeLink(
-            email_id="",
-            mailto_address=mailto_addresses[0],
-            list_unsubscribe_header=list_unsubscribe,
-            source="header",
-        )
+        return {
+            "mailto_address": mailto_addresses[0],
+            "source": "header",
+        }
 
     return None
 
@@ -231,29 +208,12 @@ def send_http_post_unsubscribe(url: str) -> bool:
 
 
 # ===========================================================================
-# Mailto Unsubscribe (requires Gmail API - not implemented in this service)
-# ===========================================================================
-
-
-def send_mailto_unsubscribe(mailto_address: str) -> bool:
-    """
-    Mailto unsubscribe requires Gmail API access to send emails.
-    This should be handled by the email-processor service which has Gmail credentials.
-    """
-    # NOTE: This service doesn't have Gmail API credentials.
-    # Mailto unsubscribe should be done by email-processor.
-    logger.warning("Mailto unsubscribe not implemented in unsubscribe-service")
-    return False
-
-
-# ===========================================================================
 # AI Browser Automation
 # ===========================================================================
 
 
 def create_browser_llm():
     """Create LLM for browser automation."""
-    # Get API key from environment
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if api_key:
         from browser_use import ChatAnthropic
@@ -334,7 +294,6 @@ INSTRUCTIONS:
 
         result = await agent.run()
 
-        # Check if task was completed successfully
         success = False
         final_message = None
 
@@ -401,7 +360,7 @@ async def unsubscribe_email(
     headers: list[dict],
     body_html: str | None = None,
     has_one_click_post: bool = False,
-) -> UnsubscribeResult:
+) -> dict:
     """
     Attempt to unsubscribe from an email using all available methods.
 
@@ -418,17 +377,17 @@ async def unsubscribe_email(
         body_urls = extract_unsubscribe_urls_from_html(body_html)
 
     # Method 1: RFC 8058 One-Click POST
-    if unsub_link and unsub_link.link_url and has_one_click_post:
+    if unsub_link and unsub_link.get("link_url") and has_one_click_post:
         logger.info(f"Trying RFC 8058 POST for {email_id}")
-        if send_http_post_unsubscribe(unsub_link.link_url):
-            return UnsubscribeResult(success=True, method="rfc8058")
+        if send_http_post_unsubscribe(unsub_link["link_url"]):
+            return {"success": True, "method": "rfc8058", "error": None}
 
     # Method 2: Browser automation for header URL
-    if unsub_link and unsub_link.link_url:
-        logger.info(f"Trying browser automation for {email_id}: {unsub_link.link_url}")
-        success, error = await unsubscribe_via_browser(unsub_link.link_url)
+    if unsub_link and unsub_link.get("link_url"):
+        logger.info(f"Trying browser automation for {email_id}: {unsub_link['link_url']}")
+        success, error = await unsubscribe_via_browser(unsub_link["link_url"])
         if success:
-            return UnsubscribeResult(success=True, method="browser")
+            return {"success": True, "method": "browser", "error": None}
         logger.warning(f"Browser automation failed: {error}")
 
     # Method 3: Browser automation for body URLs
@@ -436,54 +395,56 @@ async def unsubscribe_email(
         logger.info(f"Trying browser automation for body URL: {url}")
         success, error = await unsubscribe_via_browser(url)
         if success:
-            return UnsubscribeResult(success=True, method="browser")
+            return {"success": True, "method": "browser", "error": None}
         logger.warning(f"Browser automation failed for {url}: {error}")
 
     # All methods failed
-    return UnsubscribeResult(
-        success=False,
-        method="none",
-        error="All unsubscribe methods failed"
-    )
+    return {
+        "success": False,
+        "method": "none",
+        "error": "All unsubscribe methods failed",
+    }
 
 
 # ===========================================================================
-# API Endpoints
+# Main Entry Point
 # ===========================================================================
 
 
-@app.get("/")
-def health_check() -> dict:
-    """Health check endpoint."""
-    return {"status": "ok", "service": "unsubscribe-service"}
+async def main():
+    """Main entry point for Cloud Run Job."""
+    # Read environment variables
+    email_id = os.getenv("EMAIL_ID", "")
+    trace_id = os.getenv("TRACE_ID", f"trace-{email_id}")
+    headers_json = os.getenv("HEADERS_JSON", "[]")
+    body_html = os.getenv("BODY_HTML", "")
+    has_one_click_post = os.getenv("HAS_ONE_CLICK_POST", "false").lower() == "true"
 
+    if not email_id:
+        logger.error("EMAIL_ID environment variable is required")
+        sys.exit(1)
 
-@app.post("/unsubscribe")
-async def handle_unsubscribe(request: Request) -> JSONResponse:
-    """Handle an unsubscribe request."""
+    logger.info(f"Processing unsubscribe for email: {email_id}")
+
+    # Parse headers
     try:
-        data = await request.json()
-    except Exception:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+        headers = json.loads(headers_json)
+    except json.JSONDecodeError:
+        logger.error("Invalid HEADERS_JSON")
+        headers = []
 
-    email_id = data.get("email_id", "unknown")
-    trace_id = data.get("trace_id", f"trace-{email_id}")
-    headers = data.get("headers", [])
-    body_html = data.get("body_html")
-    has_one_click_post = data.get("has_one_click_post", False)
-
-    # LOG: Request received
+    # LOG: Job started
     log_to_storage(
         trace_id=trace_id,
         email_id=email_id,
-        stage="unsubscribe_request_received",
+        stage="unsubscribe_job_start",
     )
 
     try:
         result = await unsubscribe_email(
             email_id=email_id,
             headers=headers,
-            body_html=body_html,
+            body_html=body_html if body_html else None,
             has_one_click_post=has_one_click_post,
         )
     except Exception as e:
@@ -495,19 +456,23 @@ async def handle_unsubscribe(request: Request) -> JSONResponse:
             result="failure",
             metadata={"error": str(e)},
         )
-        return JSONResponse({"error": str(e)}, status_code=500)
+        sys.exit(1)
 
     # LOG: Result
     log_to_storage(
         trace_id=trace_id,
         email_id=email_id,
         stage="unsubscribe",
-        result="success" if result.success else "failure",
-        metadata=result.model_dump(),
+        result="success" if result["success"] else "failure",
+        metadata=result,
     )
 
-    return JSONResponse({
-        "status": "ok",
-        "email_id": email_id,
-        "result": result.model_dump(),
-    })
+    logger.info(f"Unsubscribe result: {result}")
+    logger.info(f"Done processing {email_id}")
+
+    if not result["success"]:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
