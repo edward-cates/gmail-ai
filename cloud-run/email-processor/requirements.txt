@@ -1,5 +1,13 @@
 # Email Processor - Cloud Run Job
-# Simple script: classify email and log
+# Classify email and take action (apply labels, archive)
 
 # LLM for classification
 langchain-anthropic>=0.3.0
+
+# Gmail API
+google-api-python-client>=2.0.0
+google-auth>=2.0.0
+google-auth-oauthlib>=1.0.0
+
+# Cloud Storage (for OAuth token)
+google-cloud-storage>=2.0.0

@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import sys
 import uuid
 from typing import Any
 
@@ -11,6 +12,8 @@ from google.cloud import run_v2
 
 from functions.gmail_client import GmailClient, LabelManager
 
+# Configure logging for Cloud Functions
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
 
@@ -26,8 +29,8 @@ def _log_structured(trace_id: str, email_id: str, stage: str, result: str = "suc
     if metadata:
         log_data["metadata"] = metadata
 
-    # Cloud Logging picks up JSON from stdout/logger
-    logger.info(json.dumps(log_data))
+    # Print to stdout for Cloud Logging
+    print(json.dumps(log_data), flush=True)
 
 
 def _extract_header(headers: list[dict], name: str) -> str:

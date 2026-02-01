@@ -107,8 +107,30 @@
         .stage-complete { background: #e8f5e9; color: #388e3c; }
         .stage-skip { background: #f5f5f5; color: #616161; }
         .stage-task_start { background: #e8f5e9; color: #2e7d32; }
+        .stage-job_start { background: #e8f5e9; color: #2e7d32; }
+        .stage-job_trigger { background: #ede7f6; color: #512da8; }
         .stage-classification { background: #fff9c4; color: #f57f17; }
         .stage-failure { background: #ffebee; color: #c62828; }
+        .classification-box {
+            background: #fffde7;
+            border: 1px solid #fff9c4;
+            border-radius: 4px;
+            padding: 8px 12px;
+            margin-top: 8px;
+        }
+        .classification-category {
+            font-weight: 600;
+            color: #f57f17;
+        }
+        .classification-confidence {
+            color: #666;
+            font-size: 12px;
+        }
+        .classification-reason {
+            color: #555;
+            font-size: 13px;
+            margin-top: 4px;
+        }
         .result-success { color: #388e3c; }
         .result-failure { color: #c62828; }
         .service-badge {
@@ -184,7 +206,13 @@
                         <span>{{ log.duration_ms }}ms</span>
                         {% endif %}
                     </div>
-                    {% if log.metadata and log.metadata.snippet %}
+                    {% if log.stage == 'classification' and log.metadata %}
+                    <div class="classification-box">
+                        <span class="classification-category">{{ log.metadata.category }}</span>
+                        <span class="classification-confidence">({{ (log.metadata.confidence * 100)|int }}% confidence)</span>
+                        <div class="classification-reason">{{ log.metadata.reason }}</div>
+                    </div>
+                    {% elif log.metadata and log.metadata.snippet %}
                     <div class="log-snippet">
                         {{ log.metadata.snippet }}
                     </div>
@@ -194,11 +222,19 @@
                     </div>
                     {% elif log.stage == 'query' and log.metadata and log.metadata.count is defined %}
                     <div class="log-snippet" style="color: #666;">
-                        Found {{ log.metadata.count }} email(s) to process
+                        Found {{ log.metadata.count|int }} email(s) to process
                     </div>
                     {% elif log.stage == 'entry' %}
                     <div class="log-snippet" style="color: #666;">
                         Waiting to fetch email details...
+                    </div>
+                    {% elif log.stage == 'job_trigger' and log.metadata %}
+                    <div class="log-snippet" style="color: #512da8;">
+                        Triggered job: {{ log.metadata.job }}
+                    </div>
+                    {% elif log.stage == 'job_start' and log.metadata %}
+                    <div class="log-snippet" style="color: #2e7d32;">
+                        Processing: {{ log.metadata.subject or log.email_id }}
                     </div>
                     {% endif %}
                 </div>

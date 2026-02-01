@@ -25,29 +25,39 @@ def get_logs_from_cloud_logging(project_id: str, hours: int = 24) -> list[dict]:
         cutoff = datetime.now(UTC) - timedelta(hours=hours)
         timestamp_filter = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        # Query for our structured logs from all services
+        # Query for our structured logs - both textPayload and jsonPayload formats
         filter_str = f'''
             timestamp >= "{timestamp_filter}"
             AND (
                 resource.type = "cloud_run_revision"
                 OR resource.type = "cloud_run_job"
-                OR resource.type = "cloud_function"
             )
-            AND textPayload : "trace_id"
+            AND (textPayload : "trace_id" OR jsonPayload.trace_id != "")
         '''
 
         logs: list[dict[str, Any]] = []
 
         for entry in client.list_entries(filter_=filter_str, order_by=cloud_logging.DESCENDING, max_results=500):
             try:
-                # Parse structured JSON from text payload
-                if hasattr(entry, "text_payload") and entry.text_payload:
-                    log_data = json.loads(entry.text_payload)
-                    # Add timestamp from entry if not in payload
-                    if "timestamp" not in log_data and hasattr(entry, "timestamp"):
-                        log_data["timestamp"] = entry.timestamp.isoformat() if entry.timestamp else ""
-                    logs.append(log_data)
-            except (json.JSONDecodeError, AttributeError):
+                payload = entry.payload if hasattr(entry, "payload") else None
+                if not payload:
+                    continue
+
+                # If payload is already a dict (jsonPayload), use it directly
+                if isinstance(payload, dict):
+                    log_data = payload
+                else:
+                    # Parse from text (textPayload with logging prefix)
+                    text = str(payload)
+                    if "{" in text:
+                        text = text[text.index("{"):]
+                    log_data = json.loads(text)
+
+                # Add timestamp from entry if not in payload
+                if "timestamp" not in log_data and hasattr(entry, "timestamp"):
+                    log_data["timestamp"] = entry.timestamp.isoformat() if entry.timestamp else ""
+                logs.append(log_data)
+            except (json.JSONDecodeError, AttributeError, ValueError):
                 continue
 
         return logs
