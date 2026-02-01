@@ -3,5 +3,5 @@ google-api-python-client>=2.150.0
 google-auth>=2.25.0
 google-auth-oauthlib>=1.2.0
 google-cloud-storage>=2.14.0
-google-cloud-tasks>=2.18.0
+google-cloud-run>=0.10.0
 flask>=3.0.0

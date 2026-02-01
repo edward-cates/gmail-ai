@@ -4,6 +4,7 @@
 # Web framework
 fastapi>=0.115.0
 uvicorn>=0.32.0
+gunicorn>=21.0.0
 
 # HTTP unsubscribe (RFC 8058)
 requests>=2.32.0

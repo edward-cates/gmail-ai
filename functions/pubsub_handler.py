@@ -1,4 +1,4 @@
-"""Pub/Sub handler for Gmail Watch notifications - standalone."""
+"""Pub/Sub handler for Gmail Watch notifications - triggers Cloud Run Job."""
 
 import base64
 import json
@@ -7,7 +7,7 @@ import os
 import uuid
 from typing import Any
 
-from google.cloud import tasks_v2
+from google.cloud import run_v2
 
 from functions.cloud_logger import CloudLogger
 from functions.gmail_client import GmailClient, LabelManager
@@ -24,38 +24,26 @@ def _extract_header(headers: list[dict], name: str) -> str:
 
 
 def fetch_email_metadata(client: GmailClient, email_id: str) -> dict | None:
-    """Fetch email metadata (subject and snippet)."""
+    """Fetch email metadata (subject, from, snippet)."""
     try:
         message = client.get_message_metadata(email_id)
         payload = message.get("payload", {})
         headers = payload.get("headers", [])
-        subject = _extract_header(headers, "subject")
-        snippet = message.get("snippet", "")
-        return {"subject": subject or "(No subject)", "snippet": snippet}
+        return {
+            "subject": _extract_header(headers, "subject") or "(No subject)",
+            "from": _extract_header(headers, "from"),
+            "snippet": message.get("snippet", ""),
+        }
     except Exception as e:
         logger.error(f"Failed to fetch metadata for {email_id}: {e}")
         return None
 
 
-def _log(
-    cloud_logger: CloudLogger | None,
-    trace_id: str,
-    email_id: str,
-    stage: str,
-    result: str = "success",
-    metadata: dict | None = None,
-) -> None:
-    """Helper to log to Cloud Storage."""
+def _log(cloud_logger: CloudLogger | None, trace_id: str, email_id: str, stage: str, result: str = "success", metadata: dict | None = None) -> None:
+    """Log to Cloud Storage."""
     if cloud_logger:
         try:
-            cloud_logger.log(
-                trace_id=trace_id,
-                email_id=email_id,
-                stage=stage,
-                result=result,
-                metadata=metadata,
-                service="orchestrator",
-            )
+            cloud_logger.log(trace_id=trace_id, email_id=email_id, stage=stage, result=result, metadata=metadata, service="orchestrator")
         except Exception:
             pass
 
@@ -89,12 +77,12 @@ def handle_pubsub(event: dict[str, Any], context: Any) -> None:
         result = client.list_messages(query=query, max_results=10)
         email_ids = [msg["id"] for msg in result.get("messages", [])]
 
-        _log(cloud_logger, trace_id, "unknown", "entry", "success", {"event_keys": list(event.keys())})
+        _log(cloud_logger, trace_id, "unknown", "entry", "success", {"history_id": history_id})
         _log(cloud_logger, trace_id, "unknown", "query", "success", {"query": query, "count": len(email_ids)})
 
         # Process each email
         for email_id in email_ids:
-            _process_email_for_task(
+            _process_email(
                 client=client,
                 label_manager=label_manager,
                 email_id=email_id,
@@ -112,7 +100,7 @@ def handle_pubsub(event: dict[str, Any], context: Any) -> None:
         _log(cloud_logger, trace_id, "unknown", "entry", "failure", {"error": str(e)})
 
 
-def _process_email_for_task(
+def _process_email(
     client: GmailClient,
     label_manager: LabelManager,
     email_id: str,
@@ -121,79 +109,73 @@ def _process_email_for_task(
     cloud_logger: CloudLogger | None,
     processing_label: str,
 ) -> None:
-    """Process a single email: check, mark, create task."""
+    """Process a single email: check, mark, trigger job."""
     try:
         # Check if already processed
         message = client.get_message_metadata(email_id)
         if label_id in message.get("labelIds", []):
-            _log(cloud_logger, trace_id, email_id, "skip", "success", {"message": "Already processed"})
+            _log(cloud_logger, trace_id, email_id, "skip", "success", {"reason": "already_processed"})
             return
 
         # Fetch metadata
         metadata = fetch_email_metadata(client, email_id)
-        assert metadata, f"Failed to fetch metadata for {email_id}"
-        subject = metadata.get("subject", "(No subject)")
-        snippet = metadata.get("snippet", "")
+        if not metadata:
+            _log(cloud_logger, trace_id, email_id, "fetch", "failure", {"error": "No metadata"})
+            return
 
         # Mark with processing label
         label_manager.apply_label(email_id, label_id)
         _log(cloud_logger, trace_id, email_id, "mark", "success", {
             "label": processing_label,
-            "subject": subject,
-            "snippet": snippet[:200] if snippet else "",
+            "subject": metadata["subject"],
         })
 
-        # Create Cloud Task
-        try:
-            project_id = os.getenv("GMAIL_AI_PROJECT_ID", "")
-            project_number = os.getenv("GMAIL_AI_PROJECT_NUMBER", "")
-            tasks_location = os.getenv("GMAIL_AI_TASKS_LOCATION", "us-central1")
-            tasks_queue = os.getenv("GMAIL_AI_TASKS_QUEUE", "email-processing")
-            run_service = os.getenv("GMAIL_AI_RUN_SERVICE", "email-processor")
+        # Trigger Cloud Run Job
+        _trigger_job(email_id, trace_id, metadata, cloud_logger)
 
-            # Get service URL
-            service_url = os.getenv("GMAIL_AI_RUN_SERVICE_URL")
-            if not service_url:
-                service_url = f"https://{run_service}-yktnhd6i3q-uc.a.run.app"
-
-            tasks_client = tasks_v2.CloudTasksClient()
-            queue_path = tasks_client.queue_path(project_id, tasks_location, tasks_queue)
-
-            task_payload = {"email_id": email_id, "trace_id": trace_id}
-            payload = json.dumps(task_payload).encode()
-
-            service_account_email = f"{project_number}-compute@developer.gserviceaccount.com"
-
-            task = tasks_v2.Task(
-                http_request=tasks_v2.HttpRequest(
-                    http_method=tasks_v2.HttpMethod.POST,
-                    url=f"{service_url}/process",
-                    headers={"Content-Type": "application/json"},
-                    body=payload,
-                    oidc_token=tasks_v2.OidcToken(
-                        service_account_email=service_account_email,
-                        audience=service_url,
-                    ),
-                ),
-            )
-
-            response = tasks_client.create_task(parent=queue_path, task=task)
-            task_name = response.name if hasattr(response, 'name') else "unknown"
-
-            _log(cloud_logger, trace_id, email_id, "task_create", "success", {
-                "task_name": task_name,
-                "queue": tasks_queue,
-                "service_url": service_url,
-                "subject": subject,
-            })
-
-        except Exception as e:
-            logger.error(f"Failed to create task for {email_id}: {e}", exc_info=True)
-            _log(cloud_logger, trace_id, email_id, "task_create", "failure", {"error": str(e)})
-
-    except AssertionError as e:
-        logger.error(f"Validation error for {email_id}: {e}")
-        _log(cloud_logger, trace_id, email_id, "process", "failure", {"error": str(e)})
     except Exception as e:
         logger.error(f"Failed to process {email_id}: {e}", exc_info=True)
         _log(cloud_logger, trace_id, email_id, "process", "failure", {"error": str(e)})
+
+
+def _trigger_job(email_id: str, trace_id: str, metadata: dict, cloud_logger: CloudLogger | None) -> None:
+    """Trigger Cloud Run Job to process email."""
+    project_id = os.getenv("GMAIL_AI_PROJECT_ID", "")
+    location = os.getenv("GMAIL_AI_LOCATION", "us-central1")
+    job_name = os.getenv("GMAIL_AI_JOB_NAME", "email-processor")
+
+    try:
+        jobs_client = run_v2.JobsClient()
+        job_path = f"projects/{project_id}/locations/{location}/jobs/{job_name}"
+
+        # Execute job with environment variable overrides
+        request = run_v2.RunJobRequest(
+            name=job_path,
+            overrides=run_v2.RunJobRequest.Overrides(
+                container_overrides=[
+                    run_v2.RunJobRequest.Overrides.ContainerOverride(
+                        env=[
+                            run_v2.EnvVar(name="EMAIL_ID", value=email_id),
+                            run_v2.EnvVar(name="TRACE_ID", value=trace_id),
+                            run_v2.EnvVar(name="EMAIL_SUBJECT", value=metadata.get("subject", "")),
+                            run_v2.EnvVar(name="EMAIL_FROM", value=metadata.get("from", "")),
+                            run_v2.EnvVar(name="EMAIL_BODY", value=metadata.get("snippet", "")),
+                        ],
+                    ),
+                ],
+            ),
+        )
+
+        operation = jobs_client.run_job(request=request)
+        execution_name = operation.metadata.name if hasattr(operation, "metadata") else "unknown"
+
+        logger.info(f"Triggered job for {email_id}: {execution_name}")
+        _log(cloud_logger, trace_id, email_id, "job_trigger", "success", {
+            "job": job_name,
+            "execution": execution_name,
+            "subject": metadata.get("subject", ""),
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to trigger job for {email_id}: {e}", exc_info=True)
+        _log(cloud_logger, trace_id, email_id, "job_trigger", "failure", {"error": str(e)})

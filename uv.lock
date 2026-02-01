@@ -286,8 +286,8 @@ dependencies = [
     { name = "google-api-python-client" },
     { name = "google-auth" },
     { name = "google-auth-oauthlib" },
+    { name = "google-cloud-run" },
     { name = "google-cloud-storage" },
-    { name = "google-cloud-tasks" },
     { name = "jinja2" },
     { name = "uvicorn" },
 ]
@@ -304,8 +304,8 @@ requires-dist = [
     { name = "google-api-python-client", specifier = ">=2.150.0" },
     { name = "google-auth", specifier = ">=2.25.0" },
     { name = "google-auth-oauthlib", specifier = ">=1.2.0" },
+    { name = "google-cloud-run", specifier = ">=0.10.0" },
     { name = "google-cloud-storage", specifier = ">=2.14.0" },
-    { name = "google-cloud-tasks", specifier = ">=2.18.0" },
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "uvicorn", specifier = ">=0.32.0" },
 ]
@@ -405,6 +405,23 @@ wheels = [
 ]
 
 [[package]]
+name = "google-cloud-run"
+version = "0.15.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth" },
+    { name = "grpc-google-iam-v1" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a9/99/68f421497e3236272e63eb9d5d6dc95966892b235fbbc727a0b4560e2f9c/google_cloud_run-0.15.0.tar.gz", hash = "sha256:158f264643f982bfa4f4f18f9e28c56ea00ea95c248bc8a746e159b538afab57", size = 508449, upload-time = "2026-01-22T15:37:10.951Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/44/b2a34d749dff35d9191db2b7afea82e1799f84e487220d76b15d1051c39c/google_cloud_run-0.15.0-py3-none-any.whl", hash = "sha256:e457ecb1f7ff9ec2a64aed99611383adbf89fe9e02f3dd268874122b23d22601", size = 453887, upload-time = "2026-01-22T15:37:05.633Z" },
+]
+
+[[package]]
 name = "google-cloud-storage"
 version = "3.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -419,23 +436,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a8/90/4398cecc2704cb066bc7dee6111a5c93c59bcd6fb751f0541315655774a8/google_cloud_storage-3.8.0.tar.gz", hash = "sha256:cc67952dce84ebc9d44970e24647a58260630b7b64d72360cedaf422d6727f28", size = 17273792, upload-time = "2026-01-14T00:45:31.289Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/11/db/326279870d349fb9592263343dca4ad76088c17c88ba97b0f64c1088276c/google_cloud_storage-3.8.0-py3-none-any.whl", hash = "sha256:78cfeae7cac2ca9441d0d0271c2eb4ebfa21aa4c6944dd0ccac0389e81d955a7", size = 312430, upload-time = "2026-01-14T00:45:28.689Z" },
-]
-
-[[package]]
-name = "google-cloud-tasks"
-version = "2.21.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "google-api-core", extra = ["grpc"] },
-    { name = "google-auth" },
-    { name = "grpc-google-iam-v1" },
-    { name = "grpcio" },
-    { name = "proto-plus" },
-    { name = "protobuf" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b6/58/0238b71de170b92ef359e53047a3d6ff9618c04ee255cbc6def53ab79e11/google_cloud_tasks-2.21.0.tar.gz", hash = "sha256:d28f33248553faf0ff029e1981aab56cd13bd933635c3bc33aa187675e7e14d1", size = 351784, upload-time = "2026-01-15T13:04:43.071Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b4/9d/a7f098037fb56f1d69fbfad95f58bf322a4d0dbb6cafcf380c9535730cc0/google_cloud_tasks-2.21.0-py3-none-any.whl", hash = "sha256:4bf288876892a0afac30658fc42925ccb732d3c4433a8ea568de1d67fde738f2", size = 295211, upload-time = "2026-01-15T13:02:52.377Z" },
 ]
 
 [[package]]
