@@ -1,6 +1,6 @@
 """Email Processor - Cloud Run Job.
 
-Reads EMAIL_ID from environment, classifies email, takes action, exits.
+Reads EMAIL_ID from environment, fetches email from Gmail, classifies, takes action.
 """
 
 import json
@@ -57,6 +57,42 @@ def get_gmail_service():
     return build("gmail", "v1", credentials=creds)
 
 
+def fetch_email(service, email_id: str) -> dict:
+    """Fetch email details from Gmail."""
+    message = service.users().messages().get(userId="me", id=email_id, format="full").execute()
+    payload = message.get("payload", {})
+    headers = payload.get("headers", [])
+
+    def get_header(name: str) -> str:
+        for h in headers:
+            if h.get("name", "").lower() == name.lower():
+                return h.get("value", "")
+        return ""
+
+    # Get body text
+    body = ""
+    if "parts" in payload:
+        for part in payload["parts"]:
+            if part.get("mimeType") == "text/plain":
+                import base64
+
+                data = part.get("body", {}).get("data", "")
+                if data:
+                    body = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+                    break
+    elif "body" in payload and payload["body"].get("data"):
+        import base64
+
+        body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
+
+    return {
+        "subject": get_header("subject") or "(No subject)",
+        "from": get_header("from"),
+        "snippet": message.get("snippet", ""),
+        "body": body or message.get("snippet", ""),
+    }
+
+
 def get_or_create_label(service, label_name: str) -> str:
     """Get existing label ID or create new label."""
     results = service.users().labels().list(userId="me").execute()
@@ -64,7 +100,6 @@ def get_or_create_label(service, label_name: str) -> str:
         if label.get("name") == label_name:
             return label["id"]
 
-    # Create it
     label_obj = {
         "name": label_name,
         "labelListVisibility": "labelShow",
@@ -127,15 +162,25 @@ def main():
     """Main entry point."""
     email_id = os.getenv("EMAIL_ID")
     trace_id = os.getenv("TRACE_ID", f"trace-{email_id}")
-    subject = os.getenv("EMAIL_SUBJECT", "")
-    sender = os.getenv("EMAIL_FROM", "")
-    body = os.getenv("EMAIL_BODY", "")
 
     if not email_id:
         logger.error("EMAIL_ID environment variable not set")
         sys.exit(1)
 
     logger.info(f"Processing email: {email_id}")
+
+    # Get Gmail service and fetch email
+    try:
+        service = get_gmail_service()
+        email_data = fetch_email(service, email_id)
+        subject = email_data["subject"]
+        sender = email_data["from"]
+        body = email_data["body"]
+    except Exception as e:
+        logger.error(f"Failed to fetch email: {e}")
+        log_structured(trace_id, email_id, "fetch", "failure", {"error": str(e)})
+        sys.exit(1)
+
     log_structured(trace_id, email_id, "job_start", metadata={"subject": subject, "from": sender})
 
     # CLASSIFY
@@ -153,7 +198,6 @@ def main():
     category = classification.get("category", "other")
     if category == "marketing":
         try:
-            service = get_gmail_service()
             apply_label_and_archive(service, email_id, "marketing")
             log_structured(trace_id, email_id, "action", "success", {"action": "label_and_archive", "label": "marketing"})
             logger.info(f"Applied 'marketing' label and archived {email_id}")

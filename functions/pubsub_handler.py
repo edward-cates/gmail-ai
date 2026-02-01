@@ -33,30 +33,6 @@ def _log_structured(trace_id: str, email_id: str, stage: str, result: str = "suc
     print(json.dumps(log_data), flush=True)
 
 
-def _extract_header(headers: list[dict], name: str) -> str:
-    """Extract header value by name (case-insensitive)."""
-    for header in headers:
-        if header.get("name", "").lower() == name.lower():
-            return header.get("value", "")
-    return ""
-
-
-def fetch_email_metadata(client: GmailClient, email_id: str) -> dict | None:
-    """Fetch email metadata (subject, from, snippet)."""
-    try:
-        message = client.get_message_metadata(email_id)
-        payload = message.get("payload", {})
-        headers = payload.get("headers", [])
-        return {
-            "subject": _extract_header(headers, "subject") or "(No subject)",
-            "from": _extract_header(headers, "from"),
-            "snippet": message.get("snippet", ""),
-        }
-    except Exception as e:
-        logger.error(f"Failed to fetch metadata for {email_id}: {e}")
-        return None
-
-
 def handle_pubsub(event: dict[str, Any], context: Any) -> None:
     """Cloud Function entry point for Pub/Sub messages."""
     trace_id = str(uuid.uuid4())
@@ -124,28 +100,19 @@ def _process_email(
             _log_structured(trace_id, email_id, "skip", "success", {"reason": "already_processed"})
             return
 
-        # Fetch metadata
-        metadata = fetch_email_metadata(client, email_id)
-        if not metadata:
-            _log_structured(trace_id, email_id, "fetch", "failure", {"error": "No metadata"})
-            return
-
         # Mark with processing label
         label_manager.apply_label(email_id, label_id)
-        _log_structured(trace_id, email_id, "mark", "success", {
-            "label": processing_label,
-            "subject": metadata["subject"],
-        })
+        _log_structured(trace_id, email_id, "mark", "success", {"label": processing_label})
 
-        # Trigger Cloud Run Job
-        _trigger_job(email_id, trace_id, metadata)
+        # Trigger Cloud Run Job (job will fetch its own email data)
+        _trigger_job(email_id, trace_id)
 
     except Exception as e:
         logger.error(f"Failed to process {email_id}: {e}", exc_info=True)
         _log_structured(trace_id, email_id, "process", "failure", {"error": str(e)})
 
 
-def _trigger_job(email_id: str, trace_id: str, metadata: dict) -> None:
+def _trigger_job(email_id: str, trace_id: str) -> None:
     """Trigger Cloud Run Job to process email."""
     project_id = os.getenv("GMAIL_AI_PROJECT_ID", "")
     location = os.getenv("GMAIL_AI_LOCATION", "us-central1")
@@ -155,7 +122,7 @@ def _trigger_job(email_id: str, trace_id: str, metadata: dict) -> None:
         jobs_client = run_v2.JobsClient()
         job_path = f"projects/{project_id}/locations/{location}/jobs/{job_name}"
 
-        # Execute job with environment variable overrides
+        # Execute job with just email_id and trace_id - job fetches its own data
         request = run_v2.RunJobRequest(
             name=job_path,
             overrides=run_v2.RunJobRequest.Overrides(
@@ -164,9 +131,6 @@ def _trigger_job(email_id: str, trace_id: str, metadata: dict) -> None:
                         env=[
                             run_v2.EnvVar(name="EMAIL_ID", value=email_id),
                             run_v2.EnvVar(name="TRACE_ID", value=trace_id),
-                            run_v2.EnvVar(name="EMAIL_SUBJECT", value=metadata.get("subject", "")),
-                            run_v2.EnvVar(name="EMAIL_FROM", value=metadata.get("from", "")),
-                            run_v2.EnvVar(name="EMAIL_BODY", value=metadata.get("snippet", "")),
                         ],
                     ),
                 ],
@@ -180,7 +144,6 @@ def _trigger_job(email_id: str, trace_id: str, metadata: dict) -> None:
         _log_structured(trace_id, email_id, "job_trigger", "success", {
             "job": job_name,
             "execution": execution_name,
-            "subject": metadata.get("subject", ""),
         })
 
     except Exception as e:
