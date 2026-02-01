@@ -131,6 +131,8 @@ Gmail Watch → Pub/Sub Topic → Cloud Function (gmail-processor)
 - Task name: `email-{email_id}` for deduplication (1-hour window)
 - Payload: `{"email_id": "...", "trace_id": "..."}`
 - Target: Cloud Run service `/process` endpoint
+- **Authentication**: OIDC token using service account `{project_number}-compute@developer.gserviceaccount.com`
+- **Project Number**: Configured via `GMAIL_AI_PROJECT_NUMBER` environment variable (e.g., `543519381062`)
 
 ### 3. Cloud Storage: Logging
 
@@ -176,13 +178,15 @@ Gmail Watch → Pub/Sub Topic → Cloud Function (gmail-processor)
 ### 5. Cloud Run Service: Email Processor
 
 **Service**: `email-processor`
-- **Entry point**: `cloud_run_main.py` (Flask app)
+- **Entry point**: `email_processor_main.py` (FastAPI app via uvicorn)
 - **File**: `src/gmail_ai_unsub/cloud/email_processor.py`
+- **Framework**: FastAPI (ASGI)
+- **Server**: uvicorn (via Procfile)
 - **Runtime**: Python 3.12
 - **Memory**: 1Gi
 - **CPU**: 1
 - **Timeout**: 300s
-- **Authentication**: Cloud Tasks only (not public)
+- **Authentication**: Cloud Tasks only (OIDC token authentication)
 
 **Endpoints:**
 - `POST /process` - Process email classification (called by Cloud Tasks)
@@ -199,7 +203,11 @@ Gmail Watch → Pub/Sub Topic → Cloud Function (gmail-processor)
 
 **Configuration:**
 - `ANTHROPIC_API_KEY` environment variable (from `.env` at deploy time)
+- `GMAIL_AI_STORAGE_BUCKET` environment variable
+- `GMAIL_AI_PROJECT_ID` environment variable
+- `PYTHONPATH=/workspace/src` environment variable (for module imports)
 - Model: `claude-4-5-opus` (configurable via `config.toml`)
+- **Deployment**: Uses `--command="uvicorn"` and `--args` to override buildpack auto-detection
 
 **Logging:**
 - `task_start`: When task begins processing
@@ -243,13 +251,20 @@ make run-dashboard
 **Cloud Settings:**
 ```python
 cloud_project_id = "neat-simplicity-486023-a4"
+cloud_project_number = "543519381062"  # For service account email (OIDC auth)
 cloud_pubsub_topic = "projects/neat-simplicity-486023-a4/topics/gmail-watch"
 cloud_storage_bucket = "gmail-ai-logs"
 cloud_processing_label = "🤖"
-cloud_tasks_queue = "email-processing"  # For future use
-cloud_tasks_location = "us-central1"    # For future use
-cloud_run_service = "email-processor"   # For future use
+cloud_tasks_queue = "email-processing"
+cloud_tasks_location = "us-central1"
+cloud_run_service = "email-processor"
 ```
+
+**Project Number:**
+- Used for OIDC authentication with Cloud Run
+- Service account email format: `{project_number}-compute@developer.gserviceaccount.com`
+- Can be set in `config.toml` under `[cloud]` section as `project_number`
+- Or via `GMAIL_AI_PROJECT_NUMBER` environment variable
 
 **Config Loading:**
 - Local: Reads from `config.toml`
@@ -290,7 +305,8 @@ src/gmail_ai_unsub/
 └── [existing files...]
 
 main.py                          # Cloud Functions entry points
-cloud_run_main.py                # Cloud Run entry point (Flask app)
+email_processor_main.py          # Cloud Run entry point (FastAPI app wrapper)
+Procfile                         # uvicorn command for Cloud Run
 scripts/
 ├── dev.py                       # Dev utilities (validate, reset-watch)
 └── upload-token.sh              # Upload token to Cloud Storage
