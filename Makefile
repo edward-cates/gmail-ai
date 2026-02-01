@@ -1,4 +1,4 @@
-.PHONY: help validate-dashboard test-dashboard run-dashboard check-logs deploy-function deploy-function-force deploy-watch-renewal deploy-run-service setup-queue deploy setup-scheduler watch-build setup-gmail-watch reset-gmail-watch test-pubsub-handler test-email-processor validate
+.PHONY: help validate-dashboard test-dashboard run-dashboard check-logs check-run-logs check-function-logs deploy-function deploy-function-force deploy-watch-renewal deploy-run-service setup-queue deploy setup-scheduler watch-build setup-gmail-watch reset-gmail-watch test-pubsub-handler test-email-processor validate
 
 help:
 	@echo "Available commands:"
@@ -9,6 +9,8 @@ help:
 	@echo "  make test-email-processor - Run email processor tests with mocking"
 	@echo "  make run-dashboard      - Run dashboard locally"
 	@echo "  make check-logs         - Check recent Cloud Storage logs"
+	@echo "  make check-run-logs     - Check Cloud Run service logs (email processor)"
+	@echo "  make check-function-logs - Check Cloud Function logs (orchestrator)"
 	@echo "  make deploy              - Deploy all components (function, watch renewal, run service)"
 	@echo "  make deploy-function     - Deploy Cloud Function (Pub/Sub handler) (skips if no changes)"
 	@echo "  make deploy-function-force - Force deploy Cloud Function (ignores change detection)"
@@ -38,6 +40,29 @@ run-dashboard:
 check-logs:
 	@echo "Checking recent logs from Cloud Storage..."
 	@PYTHONPATH=src uv run python scripts/check-logs.py
+
+check-run-logs:
+	@echo "Checking Cloud Run service logs (email-processor)..."
+	@gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=email-processor AND NOT textPayload=~\"not authenticated\"" \
+		--limit=20 \
+		--project=neat-simplicity-486023-a4 \
+		--format="table(timestamp,textPayload,jsonPayload.message)" \
+		--freshness=30m \
+		2>&1 | head -40
+
+check-function-logs:
+	@echo "Checking Cloud Function logs (gmail-processor orchestrator)..."
+	@echo "Recent errors and warnings:"
+	@gcloud logging read "resource.type=cloud_function AND resource.labels.function_name=gmail-processor AND severity>=WARNING" \
+		--limit=20 \
+		--project=neat-simplicity-486023-a4 \
+		--format="value(timestamp,severity,textPayload,jsonPayload.message)" \
+		--freshness=30m \
+		2>&1 | while IFS=$$'\t' read -r timestamp severity text msg; do \
+			[ -n "$$text$$msg" ] && echo "$$timestamp [$$severity]: $$text$$msg"; \
+		done | head -30
+	@echo ""
+	@echo "Note: For detailed error messages, check Cloud Storage logs with 'make check-logs'"
 
 deploy-function:
 	@echo "Checking if Cloud Function needs deployment..."
@@ -80,7 +105,7 @@ deploy-function:
 			--timeout=60s \
 			--memory=256Mi \
 			--project=neat-simplicity-486023-a4 \
-			--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=neat-simplicity-486023-a4" \
+			--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=neat-simplicity-486023-a4,GMAIL_AI_PROJECT_NUMBER=543519381062" \
 			--verbosity=debug; \
 		echo ""; \
 		echo "Resetting Gmail Watch to ensure single subscription..."; \
@@ -147,7 +172,7 @@ deploy-watch-renewal:
 			--timeout=60s \
 			--memory=256Mi \
 			--project=neat-simplicity-486023-a4 \
-			--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=neat-simplicity-486023-a4" \
+			--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=neat-simplicity-486023-a4,GMAIL_AI_PROJECT_NUMBER=543519381062" \
 			--verbosity=debug; \
 		echo ""; \
 		echo "✓ Watch renewal function deployed!"; \
@@ -221,7 +246,10 @@ deploy-run-service:
 			--cpu=1 \
 			--no-allow-unauthenticated \
 			--service-account="$$SERVICE_ACCOUNT" \
-			--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=neat-simplicity-486023-a4,ANTHROPIC_API_KEY=$$ANTHROPIC_API_KEY" \
+			--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=neat-simplicity-486023-a4,ANTHROPIC_API_KEY=$$ANTHROPIC_API_KEY,PYTHONPATH=/workspace/src" \
+			--command="uvicorn" \
+			--args="email_processor_main:app,--host,0.0.0.0,--port,8080" \
+			--port=8080 \
 			--project=neat-simplicity-486023-a4; \
 		echo ""; \
 		echo "✓ Cloud Run service deployed!"; \

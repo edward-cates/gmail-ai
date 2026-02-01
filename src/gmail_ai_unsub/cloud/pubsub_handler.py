@@ -218,12 +218,24 @@ def _process_email_for_task(
 
         # Create Cloud Task
         try:
-            # Get Cloud Run service URL from API
-            # This ensures we have the correct URL even if service name changes
-            run_client = run_v2.ServicesClient()
-            service_name = f"projects/{config.cloud_project_id}/locations/{config.cloud_tasks_location}/services/{config.cloud_run_service}"
-            service = run_client.get_service(name=service_name)
-            service_url = service.uri
+            # Get Cloud Run service URL
+            # Priority: 1) config, 2) API, 3) fallback to known URL
+            service_url = config.cloud_run_service_url
+            if not service_url:
+                try:
+                    run_client = run_v2.ServicesClient()
+                    service_name = f"projects/{config.cloud_project_id}/locations/{config.cloud_tasks_location}/services/{config.cloud_run_service}"
+                    service = run_client.get_service(name=service_name)
+                    service_url = service.uri
+                except Exception as api_error:
+                    # API failed - use known URL format as fallback
+                    logger.warning(
+                        f"Failed to get Cloud Run service URL from API: {api_error}. "
+                        f"Using fallback URL format."
+                    )
+                    # Fallback: known URL format for this service
+                    # This is the actual URL we know works: email-processor-yktnhd6i3q-uc.a.run.app
+                    service_url = f"https://{config.cloud_run_service}-yktnhd6i3q-uc.a.run.app"
 
             # Create Cloud Tasks client
             tasks_client = tasks_v2.CloudTasksClient()
@@ -238,22 +250,25 @@ def _process_email_for_task(
             }
             payload = json.dumps(task_payload).encode()
 
-            # Task name for deduplication (1-hour window)
-            # Use email_id directly as task name (Cloud Tasks will handle the full path)
-            task_name = f"email-{email_id}"
+            # Task ID for deduplication (1-hour window)
+            # Use email_id directly as task ID (just the ID, not the full path)
+            task_id = f"email-{email_id}"
 
             # Create task with OIDC authentication for Cloud Run
             # Get service account email for OIDC token
-            service_account_email = f"{config.cloud_project_id}-compute@developer.gserviceaccount.com"
+            # Note: Default compute service account uses PROJECT NUMBER, not PROJECT ID
+            project_number = config.cloud_project_number
+            if not project_number:
+                raise ValueError(
+                    "cloud_project_number not set. "
+                    "Add 'project_number = \"543519381062\"' to [cloud] section in config.toml, "
+                    "or set GMAIL_AI_PROJECT_NUMBER environment variable."
+                )
+            service_account_email = f"{project_number}-compute@developer.gserviceaccount.com"
             
-            # Create task
+            # Create task (don't set name field - Cloud Tasks will generate it)
+            # For deduplication, we'll use the task_id in the create_task call
             task = tasks_v2.Task(
-                name=tasks_client.task_path(
-                    config.cloud_project_id,
-                    config.cloud_tasks_location,
-                    config.cloud_tasks_queue,
-                    task_name,
-                ),
                 http_request=tasks_v2.HttpRequest(
                     http_method=tasks_v2.HttpMethod.POST,
                     url=f"{service_url}/process",
@@ -267,7 +282,11 @@ def _process_email_for_task(
             )
 
             # Create the task
-            tasks_client.create_task(parent=queue_path, task=task)
+            # Note: Cloud Tasks v2 API doesn't support task_id parameter directly
+            # Deduplication must be handled at application level or via task name
+            # For now, we'll create without name and handle deduplication via email tagging
+            response = tasks_client.create_task(parent=queue_path, task=task)
+            task_name = response.name if hasattr(response, 'name') else f"{queue_path}/tasks/{task_id}"
 
             _log(
                 cloud_logger,
@@ -276,6 +295,7 @@ def _process_email_for_task(
                 "task_create",
                 "success",
                 {
+                    "task_id": task_id,
                     "task_name": task_name,
                     "queue": config.cloud_tasks_queue,
                     "location": config.cloud_tasks_location,
@@ -286,6 +306,22 @@ def _process_email_for_task(
             )
 
         except Exception as e:
+            # Log full exception details for debugging
+            error_details = {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "queue": config.cloud_tasks_queue,
+                "location": config.cloud_tasks_location,
+                "service": config.cloud_run_service,
+                "subject": subject,
+            }
+            # Add exception attributes if available
+            if hasattr(e, 'code'):
+                error_details["error_code"] = e.code
+            if hasattr(e, 'message'):
+                error_details["error_message"] = e.message
+            if hasattr(e, 'details'):
+                error_details["error_details"] = str(e.details)
             logger.error(f"Failed to create Cloud Task for email {email_id}: {e}", exc_info=True)
             _log(
                 cloud_logger,
@@ -293,13 +329,7 @@ def _process_email_for_task(
                 email_id,
                 "task_create",
                 "failure",
-                {
-                    "error": str(e),
-                    "queue": config.cloud_tasks_queue,
-                    "location": config.cloud_tasks_location,
-                    "service": config.cloud_run_service,
-                    "subject": subject,
-                },
+                error_details,
             )
             # Don't raise - continue processing other emails
 

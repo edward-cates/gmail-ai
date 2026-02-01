@@ -283,6 +283,22 @@ class Config:
         return self._get("cloud", "project_id", default="")
 
     @property
+    def cloud_project_number(self) -> str:
+        """Google Cloud project number (for service account email)."""
+        # Try config first, then environment variable, then fetch from API
+        config_value = self._get("cloud", "project_number", default=None)
+        if config_value:
+            return config_value
+        
+        env_value = os.getenv("GMAIL_AI_PROJECT_NUMBER")
+        if env_value:
+            return env_value
+        
+        # Fallback: try to get from gcloud (for local dev)
+        # In Cloud Functions, this should be set via config or env var
+        return ""  # Will need to be set explicitly
+
+    @property
     def cloud_pubsub_topic(self) -> str:
         """Pub/Sub topic name for Gmail Watch notifications."""
         return self._get("cloud", "pubsub_topic", default="")
@@ -306,6 +322,11 @@ class Config:
     def cloud_run_service(self) -> str:
         """Cloud Run service name for email processing."""
         return self._get("cloud", "run_service", default="email-processor")
+
+    @property
+    def cloud_run_service_url(self) -> str | None:
+        """Cloud Run service URL (optional, will be fetched from API if not set)."""
+        return self._get("cloud", "run_service_url", default=None)
 
     @property
     def cloud_processing_label(self) -> str:

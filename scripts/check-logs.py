@@ -31,3 +31,7 @@ if __name__ == "__main__":
             print(f"   Subject: {metadata['subject']}")
         if metadata.get("count"):
             print(f"   Found {metadata['count']} email(s)")
+        if metadata.get("error"):
+            print(f"   Error: {metadata['error']}")
+        if metadata.get("message"):
+            print(f"   Message: {metadata['message']}")

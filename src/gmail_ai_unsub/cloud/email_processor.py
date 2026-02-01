@@ -10,9 +10,10 @@ import os
 import tempfile
 from typing import Any
 
-from flask import Flask, jsonify, request
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
-app = Flask(__name__)
+app = FastAPI()
 from google.cloud import storage
 
 from gmail_ai_unsub.classifier.email_classifier import ClassificationResult, create_classifier
@@ -123,10 +124,8 @@ def process_email(request_data: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
         # Parse request
         if request_data is None:
-            if request.is_json:
-                request_data = request.get_json()
-            else:
-                request_data = json.loads(request.get_data(as_text=True))
+            # This will be set by the FastAPI endpoint
+            raise ValueError("request_data must be provided")
 
         email_id = request_data.get("email_id", "")
         trace_id = request_data.get("trace_id", "")
@@ -226,21 +225,23 @@ def process_email(request_data: dict[str, Any] | None = None) -> dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-@app.route("/process", methods=["POST"])
-def process_email_http() -> Any:
+@app.post("/process")
+async def process_email_http(request: Request) -> JSONResponse:
     """Cloud Run HTTP entry point for /process endpoint.
 
     Returns:
         JSON response
     """
-    return jsonify(process_email(None))
+    try:
+        request_data = await request.json()
+    except Exception:
+        request_data = json.loads(await request.body())
+    
+    result = process_email(request_data)
+    return JSONResponse(content=result)
 
 
-@app.route("/", methods=["GET"])
-def health_check() -> Any:
+@app.get("/")
+async def health_check() -> JSONResponse:
     """Health check endpoint."""
-    return jsonify({"status": "ok"})
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    return JSONResponse(content={"status": "ok"})
