@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.send",
 ]
 
 
@@ -109,17 +110,13 @@ def get_or_create_label(service, label_name: str) -> str:
     return created["id"]
 
 
-def apply_label_and_archive(service, email_id: str, label_name: str) -> None:
-    """Apply a label and archive (remove from inbox)."""
+def apply_label(service, email_id: str, label_name: str, archive: bool = False) -> None:
+    """Apply a label, optionally archive (remove from inbox)."""
     label_id = get_or_create_label(service, label_name)
-    service.users().messages().modify(
-        userId="me",
-        id=email_id,
-        body={
-            "addLabelIds": [label_id],
-            "removeLabelIds": ["INBOX"],
-        },
-    ).execute()
+    body = {"addLabelIds": [label_id]}
+    if archive:
+        body["removeLabelIds"] = ["INBOX"]
+    service.users().messages().modify(userId="me", id=email_id, body=body).execute()
 
 
 def classify_email(subject: str, sender: str, body: str) -> dict:
@@ -130,11 +127,28 @@ def classify_email(subject: str, sender: str, body: str) -> dict:
 
     llm = ChatAnthropic(model="claude-sonnet-4-20250514", api_key=api_key, max_tokens=500)
 
-    prompt = f"""Classify this email into one of these categories:
-- marketing: Promotional emails, sales, ads
-- newsletter: Regular content updates, blogs, news digests
-- noti: Unimportant and noisy notifications (e.g., social media likes, app updates, automated system alerts)
-- other: Everything else (personal emails, important notifications)
+    prompt = f"""Classify this email by its PRIMARY PURPOSE into one of these categories:
+
+- marketing: Purpose is to drive ENGAGEMENT (clicks, purchases, signups). Even if it contains
+  information, its goal is to get you to do something. Typically promotional, sales-driven,
+  or trying to re-engage you with a product/service. Usually has an unsubscribe link.
+  Examples: sales announcements, "we miss you" emails, product launches, limited-time offers,
+  "check out what's new", app feature promotions, referral requests.
+
+- newsletter: Purpose is to INFORM. Information-dense content that delivers value through the
+  content itself, not by driving you elsewhere. Often longer-form, educational, or curated content.
+  Examples: blog digests, industry news roundups, educational content, personal essays from creators,
+  curated links with commentary, research updates.
+
+- noti: Unimportant/noisy NOTIFICATIONS. Automated alerts that don't require attention.
+  Examples: social media activity (likes, follows, comments), app badges, shipping updates,
+  order confirmations, receipts, subscription renewals, "someone viewed your profile",
+  automated system alerts, calendar reminders, read receipts.
+
+- other: Important notifications or personal emails that need attention and/or response. Do NOT classify here
+  unless it clearly doesn't fit above categories.
+  Examples: password resets, 2FA codes, bank/payment alerts, account security alerts,
+  direct messages from real people, direct social media comments from real people (they warrant response), calendar invites, support responses.
 
 Email:
 From: {sender}
@@ -156,6 +170,49 @@ Respond with JSON only:
         return json.loads(content)
     except (json.JSONDecodeError, IndexError):
         return {"category": "other", "confidence": 0.0, "reason": f"Parse error: {content[:100]}"}
+
+
+def summarize_newsletter(subject: str, sender: str, body: str) -> str:
+    """Summarize a newsletter into an elevator-pitch length digest."""
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not set")
+
+    llm = ChatAnthropic(model="claude-sonnet-4-20250514", api_key=api_key, max_tokens=1000)
+
+    prompt = f"""You're summarizing a newsletter for someone who doesn't have time to read it.
+
+Imagine you have their attention for an elevator ride—30 seconds, maybe a minute. What would you tell them?
+
+Be direct. Be dense. No fluff, no "this newsletter covers...", no meta-commentary. Just the actual insights,
+news, or takeaways they'd want to know. Use bullet points if it helps. If there are links worth clicking,
+mention what they're for.
+
+Newsletter:
+From: {sender}
+Subject: {subject}
+
+{body[:8000]}
+
+---
+Write the summary now. Keep it short enough to read in under a minute."""
+
+    response = llm.invoke(prompt)
+    return response.content.strip()
+
+
+def send_email(service, to: str, subject: str, body: str) -> str:
+    """Send an email and return the message ID."""
+    import base64
+    from email.mime.text import MIMEText
+
+    message = MIMEText(body)
+    message["to"] = to
+    message["subject"] = subject
+
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+    sent = service.users().messages().send(userId="me", body={"raw": raw}).execute()
+    return sent["id"]
 
 
 def main():
@@ -194,15 +251,40 @@ def main():
 
     log_structured(trace_id, email_id, "classification", "success", classification)
 
-    # ACTION: If marketing or noti, apply label and archive
+    # ACTION based on category
     category = classification.get("category", "other")
     if category in ["marketing", "noti"]:
+        # Label and archive
         try:
-            apply_label_and_archive(service, email_id, category)
+            apply_label(service, email_id, category, archive=True)
             log_structured(trace_id, email_id, "action", "success", {"action": "label_and_archive", "label": category})
             logger.info(f"Applied '{category}' label and archived {email_id}")
         except Exception as e:
             logger.error(f"Failed to apply label/archive: {e}")
+            log_structured(trace_id, email_id, "action", "failure", {"error": str(e)})
+    elif category == "newsletter":
+        # Summarize, email summary, label and archive original
+        try:
+            # Get user's email address
+            profile = service.users().getProfile(userId="me").execute()
+            user_email = profile["emailAddress"]
+
+            # Summarize the newsletter
+            summary = summarize_newsletter(subject, sender, body)
+            log_structured(trace_id, email_id, "summarize", "success", {"summary_length": len(summary)})
+
+            # Send summary email (subject starts with 🤖 to skip processing)
+            summary_subject = f"🤖 {subject}"
+            summary_body = f"Summary of newsletter from {sender}:\n\n{summary}\n\n---\nOriginal subject: {subject}"
+            sent_id = send_email(service, user_email, summary_subject, summary_body)
+            log_structured(trace_id, email_id, "send_summary", "success", {"sent_id": sent_id})
+
+            # Label and archive original
+            apply_label(service, email_id, category, archive=True)
+            log_structured(trace_id, email_id, "action", "success", {"action": "summarize_and_archive", "label": category})
+            logger.info(f"Summarized, emailed, and archived newsletter {email_id}")
+        except Exception as e:
+            logger.error(f"Failed to process newsletter: {e}")
             log_structured(trace_id, email_id, "action", "failure", {"error": str(e)})
 
     logger.info(f"Done processing {email_id}")

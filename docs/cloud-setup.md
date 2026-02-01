@@ -146,9 +146,9 @@ gcloud tasks queues create $QUEUE_NAME \
 ### 4.1 Clone and Install
 
 ```bash
-git clone https://github.com/yourusername/gmail-ai-unsub.git
-cd gmail-ai-unsub
-uv pip install -e .
+git clone https://github.com/yourusername/gmail-ai.git
+cd gmail-ai
+uv sync
 ```
 
 ### 4.2 Generate OAuth Token
@@ -157,64 +157,15 @@ Generate and save your Gmail OAuth token:
 
 ```bash
 export $(cat .env | grep -v '^#' | xargs)
-PYTHONPATH=src uv run python -c "
-from gmail_ai_unsub.config import Config
-from gmail_ai_unsub.gmail.auth import run_oauth_flow
-config = Config()
-run_oauth_flow(config.gmail_token_file)
-"
+uv run python scripts/refresh_token.py
 ```
 
-This will open a browser for authentication. After completing, your token will be saved locally.
+This opens a browser for authentication. After completing, `token.json` is saved locally.
 
-### 4.3 Create Config File
-
-Create `config.toml` in your platform-specific config directory:
-
-**macOS**: `~/Library/Application Support/gmail-ai-unsub/config.toml`  
-**Linux**: `~/.config/gmail-ai-unsub/config.toml`  
-**Windows**: `%LOCALAPPDATA%\gmail-ai-unsub\gmail-ai-unsub\config.toml`
-
-Or create `./config.toml` in the project root:
-
-```toml
-[gmail]
-# credentials_file = ""  # Leave empty to use .env variables
-
-[llm]
-provider = "anthropic"
-model = "claude-4-5-opus"
-api_key_env = "ANTHROPIC_API_KEY"
-
-[cloud]
-project_id = "your-project-id"
-project_number = "your-project-number"  # e.g., "543519381062"
-pubsub_topic = "projects/your-project-id/topics/gmail-watch"
-storage_bucket = "gmail-ai-logs"
-processing_label = "🤖"
-tasks_queue = "email-processing"
-tasks_location = "us-central1"
-run_service = "email-processor"
-
-[labels]
-marketing = "Unsubscribe"
-unsubscribed = "Unsubscribed"
-failed = "Unsubscribe-Failed"
-```
-
-### 4.4 Upload Config and Token to Cloud Storage
+### 4.3 Upload Token to Cloud Storage
 
 ```bash
-PROJECT_ID="your-project-id"
-BUCKET_NAME="gmail-ai-logs"
-
-# Upload config (adjust path for your OS)
-gsutil cp ~/Library/Application\ Support/gmail-ai-unsub/config.toml \
-  gs://$BUCKET_NAME/config.toml
-
-# Upload token
-gsutil cp ~/Library/Application\ Support/gmail-ai-unsub/token.json \
-  gs://$BUCKET_NAME/token.json
+gsutil cp token.json gs://gmail-ai-logs/token.json
 ```
 
 ## Step 5: Deploy Cloud Function (Pub/Sub Handler)

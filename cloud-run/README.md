@@ -1,44 +1,31 @@
 # Cloud Run Jobs
 
-Each job is standalone with its own `main.py`, `Procfile`, and `requirements.txt`.
+Standalone jobs, each with its own `main.py`, `Procfile`, `requirements.txt`.
 
-## Jobs
+## email-processor
 
-### email-processor (lightweight)
-Simple classifier: LOG → CLASSIFY → LOG
+Classifies emails and takes action.
 
-- Uses Claude for classification
+| Category | Action |
+|----------|--------|
+| marketing | Label + archive |
+| newsletter | Summarize → email you → archive |
+| noti | Label + archive |
+| other | Nothing |
+
 - Memory: 512Mi
 - Deploy: `make deploy-email-processor`
 
-### unsubscribe-service (heavy)
-AI browser automation for complex unsubscribe pages
+## unsubscribe-service
 
-- Uses browser-use + playwright
+AI browser automation for complex unsubscribe pages.
+
 - Memory: 2Gi
 - Deploy: `make deploy-unsubscribe-service`
 
-## Structure
-
-```
-cloud-run/
-├── email-processor/
-│   ├── main.py           # Script (reads env vars)
-│   ├── Procfile          # web: python3 main.py
-│   └── requirements.txt
-├── unsubscribe-service/
-│   ├── main.py           # Script (reads env vars)
-│   ├── Procfile          # web: python3 main.py
-│   └── requirements.txt
-└── README.md
-```
-
 ## How Jobs Work
 
-Jobs are triggered by Cloud Functions via the Cloud Run Jobs API. Each execution:
-1. Reads configuration from environment variables
-2. Processes the task
-3. Logs results to Cloud Storage
-4. Exits with 0 (success) or 1 (failure)
-
-No HTTP servers, no request handling—just run and exit.
+Triggered by Cloud Functions via Cloud Run Jobs API:
+1. Read env vars (EMAIL_ID, TRACE_ID)
+2. Fetch email, classify, act
+3. Exit 0 (success) or 1 (failure)

@@ -4,9 +4,15 @@ AI-readable project documentation.
 
 ## Project Purpose
 
-Cloud-based email processing system that uses LLMs to classify Gmail messages and take automated actions.
+Cloud-based email processing system that uses Claude to classify Gmail messages and take automated actions.
 
 ## Architecture
+
+```
+Gmail Watch → Pub/Sub → Cloud Function → Cloud Run Job
+                                              ↓
+                                    Classify → Act → Log
+```
 
 All code is standalone with no cross-imports between top-level directories:
 
@@ -14,56 +20,58 @@ All code is standalone with no cross-imports between top-level directories:
 /
 ├── main.py              # Cloud Function entry points
 ├── functions/           # Cloud Function logic
-├── cloud-run/           # Cloud Run services (each standalone)
+├── cloud-run/           # Cloud Run Jobs (each standalone)
 ├── dashboard/           # Local dashboard
+├── scripts/             # Utility scripts
 ├── Makefile             # All commands
 └── docs/                # Documentation
 ```
 
+## Classification & Actions
+
+| Category | Purpose | Action |
+|----------|---------|--------|
+| `marketing` | Drive engagement (sales, promos) | Label + archive |
+| `newsletter` | Inform (content, digests) | Summarize → email summary → archive |
+| `noti` | Unimportant notifications | Label + archive |
+| `other` | Important or personal | No action |
+
+Emails with subject starting with `🤖` are skipped (app's own emails).
+
 ## Cloud Functions (`functions/`)
 
-Deployed via `main.py` at root. Each file is standalone.
-
-- `pubsub_handler.py` - Receives Gmail Watch Pub/Sub, creates Cloud Tasks
+- `pubsub_handler.py` - Receives Gmail Watch, triggers Cloud Run Job
 - `watch_renewal.py` - Renews Gmail Watch weekly
 - `gmail_client.py` - Gmail API client
-- `cloud_logger.py` - Cloud Storage logging
 
-## Cloud Run Services (`cloud-run/`)
+## Cloud Run Jobs (`cloud-run/`)
 
-Each service has its own `main.py`, `Procfile`, `requirements.txt`.
-
-- `email-processor/` - Lightweight: LOG → CLASSIFY → LOG
-- `unsubscribe-service/` - Heavy: AI browser automation
-
-## Key Design Decisions
-
-1. **Standalone services** - No shared code between directories
-2. **Simple classification** - Claude API, no fancy frameworks
-3. **Cloud Tasks for dedup** - Task name = email ID
-4. **Cloud Storage logs** - JSONL files, read by dashboard
+- `email-processor/` - Classify emails, summarize newsletters, send summaries
+- `unsubscribe-service/` - AI browser automation for unsubscribe pages
 
 ## Environment Variables
 
 Cloud Functions:
-- `GMAIL_AI_STORAGE_BUCKET` - Cloud Storage bucket for logs
+- `GMAIL_AI_STORAGE_BUCKET` - Cloud Storage bucket
 - `GMAIL_AI_PROJECT_ID` - GCP project ID
-- `GMAIL_AI_PROJECT_NUMBER` - GCP project number (for OIDC)
 
 Cloud Run:
-- `ANTHROPIC_API_KEY` - For Claude classification
+- `ANTHROPIC_API_KEY` - For Claude
 
 ## Deploy
 
-All via Makefile:
-- `make deploy` - Deploy all
-- `make deploy-function` - Deploy Pub/Sub handler
-- `make deploy-email-processor` - Deploy classifier
-- `make check-logs` - View logs
+```bash
+make deploy              # Deploy all
+make deploy-email-processor
+make deploy-function
+make check-logs
+```
 
-## Commit Message Standards
+## OAuth Token
 
-Use [Conventional Commits](https://www.conventionalcommits.org/):
-- `feat(cloud): add email classification`
-- `fix(functions): handle empty historyId`
-- `docs: update deployment guide`
+Token stored in `gs://gmail-ai-logs/token.json`. Refresh with:
+```bash
+export $(cat .env | grep -v '^#' | xargs)
+uv run python scripts/refresh_token.py
+gsutil cp token.json gs://gmail-ai-logs/token.json
+```

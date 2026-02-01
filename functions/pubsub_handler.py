@@ -84,6 +84,14 @@ def handle_pubsub(event: dict[str, Any], context: Any) -> None:
         _log_structured(trace_id, "unknown", "entry", "failure", {"error": str(e)})
 
 
+def _get_header(headers: list[dict], name: str) -> str:
+    """Extract header value by name (case-insensitive)."""
+    for h in headers:
+        if h.get("name", "").lower() == name.lower():
+            return h.get("value", "")
+    return ""
+
+
 def _process_email(
     client: GmailClient,
     label_manager: LabelManager,
@@ -94,25 +102,35 @@ def _process_email(
 ) -> None:
     """Process a single email: check, mark, trigger job."""
     try:
-        # Check if already processed
+        # Fetch message metadata including headers
         message = client.get_message_metadata(email_id)
+        headers = message.get("payload", {}).get("headers", [])
+        subject = _get_header(headers, "Subject") or "(No Subject)"
+        sender = _get_header(headers, "From")
+
+        # Check if already processed
         if label_id in message.get("labelIds", []):
-            _log_structured(trace_id, email_id, "skip", "success", {"reason": "already_processed"})
+            _log_structured(trace_id, email_id, "skip", "success", {"reason": "already_processed", "subject": subject})
+            return
+
+        # Skip emails from this app (subject starts with 🤖)
+        if subject.startswith("🤖"):
+            _log_structured(trace_id, email_id, "skip", "success", {"reason": "app_email", "subject": subject})
             return
 
         # Mark with processing label
         label_manager.apply_label(email_id, label_id)
-        _log_structured(trace_id, email_id, "mark", "success", {"label": processing_label})
+        _log_structured(trace_id, email_id, "mark", "success", {"label": processing_label, "subject": subject, "from": sender})
 
         # Trigger Cloud Run Job (job will fetch its own email data)
-        _trigger_job(email_id, trace_id)
+        _trigger_job(email_id, trace_id, subject)
 
     except Exception as e:
         logger.error(f"Failed to process {email_id}: {e}", exc_info=True)
         _log_structured(trace_id, email_id, "process", "failure", {"error": str(e)})
 
 
-def _trigger_job(email_id: str, trace_id: str) -> None:
+def _trigger_job(email_id: str, trace_id: str, subject: str) -> None:
     """Trigger Cloud Run Job to process email."""
     project_id = os.getenv("GMAIL_AI_PROJECT_ID", "")
     location = os.getenv("GMAIL_AI_LOCATION", "us-central1")
@@ -144,6 +162,7 @@ def _trigger_job(email_id: str, trace_id: str) -> None:
         _log_structured(trace_id, email_id, "job_trigger", "success", {
             "job": job_name,
             "execution": execution_name,
+            "subject": subject,
         })
 
     except Exception as e:
