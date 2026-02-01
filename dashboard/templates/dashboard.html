@@ -209,7 +209,9 @@
                     {% if log.stage == 'classification' and log.metadata %}
                     <div class="classification-box">
                         <span class="classification-category">{{ log.metadata.category }}</span>
+                        {% if log.metadata.confidence %}
                         <span class="classification-confidence">({{ (log.metadata.confidence * 100)|int }}% confidence)</span>
+                        {% endif %}
                         <div class="classification-reason">{{ log.metadata.reason }}</div>
                     </div>
                     {% elif log.metadata and log.metadata.snippet %}
