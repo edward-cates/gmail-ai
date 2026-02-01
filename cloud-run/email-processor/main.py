@@ -3,12 +3,14 @@
 Reads EMAIL_ID from environment, fetches email from Gmail, classifies, takes action.
 """
 
+import base64
 import json
 import logging
 import os
 import sys
 import tempfile
 
+from bs4 import BeautifulSoup
 from google.auth.transport.requests import Request
 from google.cloud import storage
 from google.oauth2.credentials import Credentials
@@ -23,6 +25,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
 ]
+
+# Threshold for combining text and HTML content (HTML must be 2x longer to combine)
+HTML_LENGTH_MULTIPLIER = 2.0
 
 
 def log_structured(
@@ -60,6 +65,71 @@ def get_gmail_service():
     return build("gmail", "v1", credentials=creds)
 
 
+def html_to_text(html_content: str) -> str:
+    """Convert HTML to plain text, preserving readability."""
+    try:
+        soup = BeautifulSoup(html_content, "html.parser")
+
+        # Remove script and style elements
+        for element in soup(["script", "style"]):
+            element.decompose()
+
+        # Get text with some spacing
+        text = soup.get_text(separator="\n", strip=True)
+
+        # Clean up excessive whitespace
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning(f"HTML parsing failed: {e}")
+        return ""
+
+
+def extract_email_parts(payload: dict) -> tuple[str, str]:
+    """Extract text/plain and text/html content from email payload.
+
+    Returns:
+        Tuple of (text_body, html_body) where either may be empty string.
+    """
+    def extract_part_body(part: dict) -> str:
+        """Extract and decode body data from a part."""
+        data = part.get("body", {}).get("data", "")
+        if data:
+            return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+        return ""
+
+    text_body = ""
+    html_body = ""
+
+    def process_parts(parts: list) -> tuple[str, str]:
+        """Recursively process email parts to find text/plain and text/html."""
+        nonlocal text_body, html_body
+        for part in parts:
+            mime_type = part.get("mimeType", "")
+
+            if mime_type == "text/plain" and not text_body:
+                text_body = extract_part_body(part)
+            elif mime_type == "text/html" and not html_body:
+                html_body = extract_part_body(part)
+            elif "parts" in part:
+                # Recursively process nested parts
+                process_parts(part["parts"])
+        return text_body, html_body
+
+    if "parts" in payload:
+        text_body, html_body = process_parts(payload["parts"])
+    elif "body" in payload and payload["body"].get("data"):
+        # Single part message
+        mime_type = payload.get("mimeType", "")
+        body_data = extract_part_body(payload)
+        if mime_type == "text/plain":
+            text_body = body_data
+        elif mime_type == "text/html":
+            html_body = body_data
+
+    return text_body, html_body
+
+
 def fetch_email(service, email_id: str) -> dict:
     """Fetch email details from Gmail."""
     message = service.users().messages().get(userId="me", id=email_id, format="full").execute()
@@ -72,27 +142,30 @@ def fetch_email(service, email_id: str) -> dict:
                 return h.get("value", "")
         return ""
 
-    # Get body text
-    body = ""
-    if "parts" in payload:
-        for part in payload["parts"]:
-            if part.get("mimeType") == "text/plain":
-                import base64
+    # Extract both text and HTML content
+    text_body, html_body = extract_email_parts(payload)
 
-                data = part.get("body", {}).get("data", "")
-                if data:
-                    body = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
-                    break
-    elif "body" in payload and payload["body"].get("data"):
-        import base64
+    # Prefer text/plain, but fall back to HTML converted to text
+    final_body = text_body
+    if not final_body and html_body:
+        final_body = html_to_text(html_body)
 
-        body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
+    # If we have both, and HTML has significantly more content, use both
+    if text_body and html_body:
+        html_text = html_to_text(html_body)
+        # Combine both if HTML version has significantly more content
+        if len(html_text) > len(text_body) * HTML_LENGTH_MULTIPLIER:
+            final_body = text_body + "\n\n" + html_text
+
+    # Fall back to snippet if no body found
+    if not final_body:
+        final_body = message.get("snippet", "")
 
     return {
         "subject": get_header("subject") or "(No subject)",
         "from": get_header("from"),
         "snippet": message.get("snippet", ""),
-        "body": body or message.get("snippet", ""),
+        "body": final_body,
     }
 
 
@@ -288,7 +361,14 @@ def main():
 
             # Send summary email (subject starts with 🤖 to skip processing)
             summary_subject = f"🤖 {subject}"
-            summary_body = f"Summary of newsletter from {sender}:\n\n{summary}\n\n---\nOriginal subject: {subject}"
+            gmail_link = f"https://mail.google.com/mail/u/0/#all/{email_id}"
+            summary_body = (
+                f"Summary of newsletter from {sender}:\n\n"
+                f"{summary}\n\n"
+                f"---\n"
+                f"Original subject: {subject}\n"
+                f"View original: {gmail_link}"
+            )
             sent_id = send_email(service, user_email, summary_subject, summary_body)
             log_structured(trace_id, email_id, "send_summary", "success", {"sent_id": sent_id})
 
