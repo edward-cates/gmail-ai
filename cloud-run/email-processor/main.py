@@ -166,6 +166,7 @@ def fetch_email(service, email_id: str) -> dict:
         "from": get_header("from"),
         "snippet": message.get("snippet", ""),
         "body": final_body,
+        "thread_id": message.get("threadId", ""),
     }
 
 
@@ -311,6 +312,7 @@ def main():
         subject = email_data["subject"]
         sender = email_data["from"]
         body = email_data["body"]
+        thread_id = email_data["thread_id"]
     except Exception as e:
         logger.error(f"Failed to fetch email: {e}")
         log_structured(trace_id, email_id, "fetch", "failure", {"error": str(e)})
@@ -361,7 +363,7 @@ def main():
 
             # Send summary email (subject starts with 🤖 to skip processing)
             summary_subject = f"🤖 {subject}"
-            gmail_link = f"https://mail.google.com/mail/u/0/#all/{email_id}"
+            gmail_link = f"https://mail.google.com/mail/u/0/#all/{thread_id}"
             summary_body = (
                 f"Summary of newsletter from {sender}:\n\n"
                 f"{summary}\n\n"
