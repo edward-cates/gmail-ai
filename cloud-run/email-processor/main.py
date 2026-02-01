@@ -3,6 +3,7 @@
 Reads EMAIL_ID from environment, fetches email from Gmail, classifies, takes action.
 """
 
+import base64
 import json
 import logging
 import os
@@ -24,6 +25,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
 ]
+
+# Threshold for combining text and HTML content (HTML must be 2x longer to combine)
+HTML_LENGTH_MULTIPLIER = 2.0
 
 
 def log_structured(
@@ -81,20 +85,12 @@ def html_to_text(html_content: str) -> str:
         return ""
 
 
-def fetch_email(service, email_id: str) -> dict:
-    """Fetch email details from Gmail."""
-    message = service.users().messages().get(userId="me", id=email_id, format="full").execute()
-    payload = message.get("payload", {})
-    headers = payload.get("headers", [])
-
-    def get_header(name: str) -> str:
-        for h in headers:
-            if h.get("name", "").lower() == name.lower():
-                return h.get("value", "")
-        return ""
-
-    import base64
-
+def extract_email_parts(payload: dict) -> tuple[str, str]:
+    """Extract text/plain and text/html content from email payload.
+    
+    Returns:
+        Tuple of (text_body, html_body) where either may be empty string.
+    """
     def extract_part_body(part: dict) -> str:
         """Extract and decode body data from a part."""
         data = part.get("body", {}).get("data", "")
@@ -102,11 +98,10 @@ def fetch_email(service, email_id: str) -> dict:
             return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
         return ""
 
-    # Extract both text and HTML content
     text_body = ""
     html_body = ""
     
-    def process_parts(parts: list):
+    def process_parts(parts: list) -> tuple[str, str]:
         """Recursively process email parts to find text/plain and text/html."""
         nonlocal text_body, html_body
         for part in parts:
@@ -119,9 +114,10 @@ def fetch_email(service, email_id: str) -> dict:
             elif "parts" in part:
                 # Recursively process nested parts
                 process_parts(part["parts"])
+        return text_body, html_body
 
     if "parts" in payload:
-        process_parts(payload["parts"])
+        text_body, html_body = process_parts(payload["parts"])
     elif "body" in payload and payload["body"].get("data"):
         # Single part message
         mime_type = payload.get("mimeType", "")
@@ -130,6 +126,24 @@ def fetch_email(service, email_id: str) -> dict:
             text_body = body_data
         elif mime_type == "text/html":
             html_body = body_data
+    
+    return text_body, html_body
+
+
+def fetch_email(service, email_id: str) -> dict:
+    """Fetch email details from Gmail."""
+    message = service.users().messages().get(userId="me", id=email_id, format="full").execute()
+    payload = message.get("payload", {})
+    headers = payload.get("headers", [])
+
+    def get_header(name: str) -> str:
+        for h in headers:
+            if h.get("name", "").lower() == name.lower():
+                return h.get("value", "")
+        return ""
+
+    # Extract both text and HTML content
+    text_body, html_body = extract_email_parts(payload)
 
     # Prefer text/plain, but fall back to HTML converted to text
     final_body = text_body
@@ -139,8 +153,8 @@ def fetch_email(service, email_id: str) -> dict:
     # If we have both, and HTML has significantly more content, use both
     if text_body and html_body:
         html_text = html_to_text(html_body)
-        # If HTML version has significantly more content (2x longer), combine them
-        if len(html_text) > len(text_body) * 2:
+        # Combine both if HTML version has significantly more content
+        if len(html_text) > len(text_body) * HTML_LENGTH_MULTIPLIER:
             final_body = text_body + "\n\n" + html_text
 
     # Fall back to snippet if no body found
