@@ -24,12 +24,10 @@ import logging
 import os
 import re
 import sys
-from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from google.cloud import storage
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,43 +38,25 @@ logger = logging.getLogger(__name__)
 # ===========================================================================
 
 
-def log_to_storage(
+def log_structured(
     trace_id: str,
     email_id: str,
     stage: str,
     result: str = "success",
     metadata: dict | None = None,
-) -> bool:
-    """Log to Cloud Storage as JSONL."""
-    bucket_name = os.getenv("GMAIL_AI_STORAGE_BUCKET", "gmail-ai-logs")
-    project_id = os.getenv("GMAIL_AI_PROJECT_ID")
-
-    log_entry = {
-        "timestamp": datetime.now(UTC).isoformat(),
+) -> None:
+    """Log structured JSON to Cloud Logging."""
+    log_data = {
         "trace_id": trace_id,
         "email_id": email_id,
         "stage": stage,
         "result": result,
-        "metadata": metadata or {},
+        "service": "unsubscribe-service",
     }
+    if metadata:
+        log_data["metadata"] = metadata
 
-    try:
-        client = storage.Client(project=project_id)
-        bucket = client.bucket(bucket_name)
-        now = datetime.now(UTC)
-        blob_path = f"logs/{now.strftime('%Y/%m/%d')}/log.jsonl"
-        blob = bucket.blob(blob_path)
-
-        existing = ""
-        if blob.exists():
-            existing = blob.download_as_text()
-
-        blob.upload_from_string(existing + json.dumps(log_entry) + "\n")
-        logger.info(f"Logged: {stage} - {result}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to log to storage: {e}")
-        return False
+    logger.info(json.dumps(log_data))
 
 
 # ===========================================================================
@@ -434,7 +414,7 @@ async def main():
         headers = []
 
     # LOG: Job started
-    log_to_storage(
+    log_structured(
         trace_id=trace_id,
         email_id=email_id,
         stage="unsubscribe_job_start",
@@ -449,7 +429,7 @@ async def main():
         )
     except Exception as e:
         logger.error(f"Unsubscribe failed: {e}")
-        log_to_storage(
+        log_structured(
             trace_id=trace_id,
             email_id=email_id,
             stage="unsubscribe",
@@ -459,7 +439,7 @@ async def main():
         sys.exit(1)
 
     # LOG: Result
-    log_to_storage(
+    log_structured(
         trace_id=trace_id,
         email_id=email_id,
         stage="unsubscribe",

@@ -9,10 +9,25 @@ from typing import Any
 
 from google.cloud import run_v2
 
-from functions.cloud_logger import CloudLogger
 from functions.gmail_client import GmailClient, LabelManager
 
 logger = logging.getLogger(__name__)
+
+
+def _log_structured(trace_id: str, email_id: str, stage: str, result: str = "success", metadata: dict | None = None) -> None:
+    """Log structured JSON to Cloud Logging."""
+    log_data = {
+        "trace_id": trace_id,
+        "email_id": email_id,
+        "stage": stage,
+        "result": result,
+        "service": "orchestrator",
+    }
+    if metadata:
+        log_data["metadata"] = metadata
+
+    # Cloud Logging picks up JSON from stdout/logger
+    logger.info(json.dumps(log_data))
 
 
 def _extract_header(headers: list[dict], name: str) -> str:
@@ -39,19 +54,9 @@ def fetch_email_metadata(client: GmailClient, email_id: str) -> dict | None:
         return None
 
 
-def _log(cloud_logger: CloudLogger | None, trace_id: str, email_id: str, stage: str, result: str = "success", metadata: dict | None = None) -> None:
-    """Log to Cloud Storage."""
-    if cloud_logger:
-        try:
-            cloud_logger.log(trace_id=trace_id, email_id=email_id, stage=stage, result=result, metadata=metadata, service="orchestrator")
-        except Exception:
-            pass
-
-
 def handle_pubsub(event: dict[str, Any], context: Any) -> None:
     """Cloud Function entry point for Pub/Sub messages."""
     trace_id = str(uuid.uuid4())
-    cloud_logger = CloudLogger()
 
     try:
         # Parse Pub/Sub message
@@ -63,6 +68,8 @@ def handle_pubsub(event: dict[str, Any], context: Any) -> None:
 
         history_id = str(pubsub_message.get("historyId", ""))
         assert history_id, "Pub/Sub message must contain historyId"
+
+        _log_structured(trace_id, "unknown", "entry", "success", {"history_id": history_id})
 
         # Initialize Gmail client
         client = GmailClient()
@@ -77,8 +84,7 @@ def handle_pubsub(event: dict[str, Any], context: Any) -> None:
         result = client.list_messages(query=query, max_results=10)
         email_ids = [msg["id"] for msg in result.get("messages", [])]
 
-        _log(cloud_logger, trace_id, "unknown", "entry", "success", {"history_id": history_id})
-        _log(cloud_logger, trace_id, "unknown", "query", "success", {"query": query, "count": len(email_ids)})
+        _log_structured(trace_id, "unknown", "query", "success", {"query": query, "count": len(email_ids)})
 
         # Process each email
         for email_id in email_ids:
@@ -88,16 +94,15 @@ def handle_pubsub(event: dict[str, Any], context: Any) -> None:
                 email_id=email_id,
                 label_id=label_id,
                 trace_id=trace_id,
-                cloud_logger=cloud_logger,
                 processing_label=processing_label,
             )
 
     except AssertionError as e:
         logger.error(f"Validation error: {e}")
-        _log(cloud_logger, trace_id, "unknown", "entry", "failure", {"error": str(e)})
+        _log_structured(trace_id, "unknown", "entry", "failure", {"error": str(e)})
     except Exception as e:
         logger.error(f"Failed to process Pub/Sub message: {e}", exc_info=True)
-        _log(cloud_logger, trace_id, "unknown", "entry", "failure", {"error": str(e)})
+        _log_structured(trace_id, "unknown", "entry", "failure", {"error": str(e)})
 
 
 def _process_email(
@@ -106,7 +111,6 @@ def _process_email(
     email_id: str,
     label_id: str,
     trace_id: str,
-    cloud_logger: CloudLogger | None,
     processing_label: str,
 ) -> None:
     """Process a single email: check, mark, trigger job."""
@@ -114,31 +118,31 @@ def _process_email(
         # Check if already processed
         message = client.get_message_metadata(email_id)
         if label_id in message.get("labelIds", []):
-            _log(cloud_logger, trace_id, email_id, "skip", "success", {"reason": "already_processed"})
+            _log_structured(trace_id, email_id, "skip", "success", {"reason": "already_processed"})
             return
 
         # Fetch metadata
         metadata = fetch_email_metadata(client, email_id)
         if not metadata:
-            _log(cloud_logger, trace_id, email_id, "fetch", "failure", {"error": "No metadata"})
+            _log_structured(trace_id, email_id, "fetch", "failure", {"error": "No metadata"})
             return
 
         # Mark with processing label
         label_manager.apply_label(email_id, label_id)
-        _log(cloud_logger, trace_id, email_id, "mark", "success", {
+        _log_structured(trace_id, email_id, "mark", "success", {
             "label": processing_label,
             "subject": metadata["subject"],
         })
 
         # Trigger Cloud Run Job
-        _trigger_job(email_id, trace_id, metadata, cloud_logger)
+        _trigger_job(email_id, trace_id, metadata)
 
     except Exception as e:
         logger.error(f"Failed to process {email_id}: {e}", exc_info=True)
-        _log(cloud_logger, trace_id, email_id, "process", "failure", {"error": str(e)})
+        _log_structured(trace_id, email_id, "process", "failure", {"error": str(e)})
 
 
-def _trigger_job(email_id: str, trace_id: str, metadata: dict, cloud_logger: CloudLogger | None) -> None:
+def _trigger_job(email_id: str, trace_id: str, metadata: dict) -> None:
     """Trigger Cloud Run Job to process email."""
     project_id = os.getenv("GMAIL_AI_PROJECT_ID", "")
     location = os.getenv("GMAIL_AI_LOCATION", "us-central1")
@@ -170,7 +174,7 @@ def _trigger_job(email_id: str, trace_id: str, metadata: dict, cloud_logger: Clo
         execution_name = operation.metadata.name if hasattr(operation, "metadata") else "unknown"
 
         logger.info(f"Triggered job for {email_id}: {execution_name}")
-        _log(cloud_logger, trace_id, email_id, "job_trigger", "success", {
+        _log_structured(trace_id, email_id, "job_trigger", "success", {
             "job": job_name,
             "execution": execution_name,
             "subject": metadata.get("subject", ""),
@@ -178,4 +182,4 @@ def _trigger_job(email_id: str, trace_id: str, metadata: dict, cloud_logger: Clo
 
     except Exception as e:
         logger.error(f"Failed to trigger job for {email_id}: {e}", exc_info=True)
-        _log(cloud_logger, trace_id, email_id, "job_trigger", "failure", {"error": str(e)})
+        _log_structured(trace_id, email_id, "job_trigger", "failure", {"error": str(e)})

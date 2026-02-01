@@ -64,8 +64,8 @@ validate: test lint
 
 run-dashboard:
 	@echo "Starting dashboard on http://127.0.0.1:8080"
-	@echo "Set GMAIL_AI_STORAGE_BUCKET and GMAIL_AI_PROJECT_ID env vars first"
-	@uv run uvicorn dashboard.app:app --reload --port 8080 --host 127.0.0.1
+	@export GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs GMAIL_AI_PROJECT_ID=$(PROJECT_ID) && \
+	uv run uvicorn dashboard.app:app --reload --port 8080 --host 127.0.0.1
 
 # ============================================================================
 # LOGS

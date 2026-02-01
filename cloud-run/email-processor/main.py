@@ -7,45 +7,26 @@ import json
 import logging
 import os
 import sys
-from datetime import UTC, datetime
 
-from google.cloud import storage
 from langchain_anthropic import ChatAnthropic
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def log_to_storage(trace_id: str, email_id: str, stage: str, result: str = "success", metadata: dict | None = None) -> None:
-    """Log to Cloud Storage as JSONL."""
-    bucket_name = os.getenv("GMAIL_AI_STORAGE_BUCKET", "gmail-ai-logs")
-    project_id = os.getenv("GMAIL_AI_PROJECT_ID")
-
-    log_entry = {
-        "timestamp": datetime.now(UTC).isoformat(),
+def log_structured(trace_id: str, email_id: str, stage: str, result: str = "success", metadata: dict | None = None) -> None:
+    """Log structured JSON to Cloud Logging."""
+    log_data = {
         "trace_id": trace_id,
         "email_id": email_id,
         "stage": stage,
         "result": result,
         "service": "email-processor",
-        "metadata": metadata or {},
     }
+    if metadata:
+        log_data["metadata"] = metadata
 
-    try:
-        client = storage.Client(project=project_id)
-        bucket = client.bucket(bucket_name)
-        now = datetime.now(UTC)
-        blob_path = f"logs/{now.strftime('%Y/%m/%d')}/log.jsonl"
-        blob = bucket.blob(blob_path)
-
-        existing = ""
-        if blob.exists():
-            existing = blob.download_as_text()
-
-        blob.upload_from_string(existing + json.dumps(log_entry) + "\n")
-        logger.info(f"Logged: {stage} - {result}")
-    except Exception as e:
-        logger.error(f"Failed to log to storage: {e}")
+    logger.info(json.dumps(log_data))
 
 
 def classify_email(subject: str, sender: str, body: str) -> dict:
@@ -100,7 +81,7 @@ def main():
     logger.info(f"Processing email: {email_id}")
 
     # LOG: Start
-    log_to_storage(trace_id, email_id, "job_start", metadata={"subject": subject, "from": sender})
+    log_structured(trace_id, email_id, "job_start", metadata={"subject": subject, "from": sender})
 
     # CLASSIFY
     try:
@@ -108,11 +89,11 @@ def main():
         logger.info(f"Classification: {classification}")
     except Exception as e:
         logger.error(f"Classification failed: {e}")
-        log_to_storage(trace_id, email_id, "classification", "failure", {"error": str(e)})
+        log_structured(trace_id, email_id, "classification", "failure", {"error": str(e)})
         sys.exit(1)
 
     # LOG: Result
-    log_to_storage(trace_id, email_id, "classification", "success", classification)
+    log_structured(trace_id, email_id, "classification", "success", classification)
 
     logger.info(f"Done processing {email_id}")
 
