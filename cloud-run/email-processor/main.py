@@ -69,14 +69,14 @@ def html_to_text(html_content: str) -> str:
     """Convert HTML to plain text, preserving readability."""
     try:
         soup = BeautifulSoup(html_content, "html.parser")
-        
+
         # Remove script and style elements
         for element in soup(["script", "style"]):
             element.decompose()
-        
+
         # Get text with some spacing
         text = soup.get_text(separator="\n", strip=True)
-        
+
         # Clean up excessive whitespace
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         return "\n".join(lines)
@@ -87,7 +87,7 @@ def html_to_text(html_content: str) -> str:
 
 def extract_email_parts(payload: dict) -> tuple[str, str]:
     """Extract text/plain and text/html content from email payload.
-    
+
     Returns:
         Tuple of (text_body, html_body) where either may be empty string.
     """
@@ -100,13 +100,13 @@ def extract_email_parts(payload: dict) -> tuple[str, str]:
 
     text_body = ""
     html_body = ""
-    
+
     def process_parts(parts: list) -> tuple[str, str]:
         """Recursively process email parts to find text/plain and text/html."""
         nonlocal text_body, html_body
         for part in parts:
             mime_type = part.get("mimeType", "")
-            
+
             if mime_type == "text/plain" and not text_body:
                 text_body = extract_part_body(part)
             elif mime_type == "text/html" and not html_body:
@@ -126,7 +126,7 @@ def extract_email_parts(payload: dict) -> tuple[str, str]:
             text_body = body_data
         elif mime_type == "text/html":
             html_body = body_data
-    
+
     return text_body, html_body
 
 
@@ -149,7 +149,7 @@ def fetch_email(service, email_id: str) -> dict:
     final_body = text_body
     if not final_body and html_body:
         final_body = html_to_text(html_body)
-    
+
     # If we have both, and HTML has significantly more content, use both
     if text_body and html_body:
         html_text = html_to_text(html_body)
