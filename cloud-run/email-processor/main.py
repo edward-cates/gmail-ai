@@ -220,7 +220,9 @@ def classify_email(subject: str, sender: str, body: str) -> dict:
   Examples: social media activity (likes, follows, comments), app badges, shipping updates,
   order confirmations, receipts, subscription renewals, "someone viewed your profile",
   automated system alerts, calendar reminders, read receipts, routine credit monitoring alerts
-  (e.g., Experian, TransUnion, Equifax regular status updates without significant changes).
+  (e.g., Experian, TransUnion, Equifax regular status updates without significant changes),
+  privacy policy updates, terms of service updates (UNLESS they contain suspicious, sneaky,
+  or significantly harmful changes—in that case, classify as 'other').
 
 - other: Important notifications or personal emails that need attention and/or response. Do NOT classify here
   unless it clearly doesn't fit above categories.
