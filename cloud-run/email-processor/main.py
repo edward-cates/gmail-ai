@@ -216,7 +216,9 @@ def classify_email(subject: str, sender: str, body: str) -> dict:
   Examples: blog digests, industry news roundups, educational content, personal essays from creators,
   curated links with commentary, research updates.
 
-- noti: Unimportant/noisy NOTIFICATIONS. Automated alerts that don't require attention.
+- noti: Unimportant/noisy NOTIFICATIONS. Automated alerts that don't require attention or action.
+  These are informational only, NOT actionable. If the notification requires or enables user action
+  (downloading something, responding, reviewing important information), classify as 'other' instead.
   Examples: social media activity (likes, follows, comments), app badges, shipping updates,
   order confirmations, receipts, subscription renewals, "someone viewed your profile",
   automated system alerts, calendar reminders, read receipts, routine credit monitoring alerts
@@ -224,12 +226,14 @@ def classify_email(subject: str, sender: str, body: str) -> dict:
   privacy policy updates, terms of service updates (UNLESS they contain suspicious, sneaky,
   or significantly harmful changes—in that case, classify as 'other').
 
-- other: Important notifications or personal emails that need attention and/or response. Do NOT classify here
+- other: Important notifications or personal emails that need attention and/or response. Includes
+  notifications that enable or require user action, even if automated. Do NOT classify here
   unless it clearly doesn't fit above categories.
   Examples: password resets, 2FA codes, bank/payment alerts requiring action (unusual activity, fraud),
   account security alerts, credit monitoring alerts indicating significant changes (score drops, new accounts),
   direct messages from real people, direct social media comments from real people (they warrant response),
-  calendar invites, support responses.
+  calendar invites, support responses, shared files/passes to download, health portal messages,
+  notifications that enable taking action or require review.
 
 Email:
 From: {sender}
