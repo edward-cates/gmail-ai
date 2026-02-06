@@ -123,6 +123,28 @@ class TrelloClient:
         r.raise_for_status()
         return r.json()
 
+    def update_checklist_item(self, card_id, check_item_id, completed=None, name=None):
+        """Update a checklist item (name and/or completion state)."""
+        params = self._params()
+        if completed is not None:
+            params["state"] = "complete" if completed else "incomplete"
+        if name is not None:
+            params["name"] = name
+        r = requests.put(
+            f"{self.BASE_URL}/cards/{card_id}/checkItem/{check_item_id}",
+            params=params,
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def delete_checklist_item(self, checklist_id, check_item_id):
+        """Delete a checklist item."""
+        r = requests.delete(
+            f"{self.BASE_URL}/checklists/{checklist_id}/checkItems/{check_item_id}",
+            params=self._params(),
+        )
+        r.raise_for_status()
+
 
 # --- Slack Client ---
 
@@ -396,43 +418,85 @@ Respond with a JSON array, one entry per message in the same order:
 # --- Claude: Description Updates (Haiku) ---
 
 
-def update_description_summary(current_desc, channel_name, new_message, sender_name):
-    """Use Haiku to update the Summary section of a card description."""
+def update_description_summary(current_desc, channel_name, new_message, sender_name, current_action_items=None):
+    """Use Haiku to update the Summary section and revise action items.
+
+    Args:
+        current_desc: current card description
+        channel_name: Slack channel name
+        new_message: the new message text
+        sender_name: who sent the message
+        current_action_items: list of {"text": str, "completed": bool} or None
+
+    Returns:
+        {"description": str, "action_items": [{"text": str, "completed": bool}]}
+    """
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set")
 
-    llm = ChatAnthropic(model=MODEL_SUMMARIZE, api_key=api_key, max_tokens=600)
+    llm = ChatAnthropic(model=MODEL_SUMMARIZE, api_key=api_key, max_tokens=1000)
 
-    prompt = f"""You maintain a Trello card description that serves as a living brief for a Slack topic.
-The description has three sections: **Summary**, **Reactions**, and **Threads**.
+    action_items_block = "(none yet)"
+    if current_action_items:
+        lines = []
+        for item in current_action_items:
+            status = "done" if item.get("completed") else "open"
+            lines.append(f"- [{status}] {item['text']}")
+        action_items_block = "\n".join(lines)
+
+    prompt = f"""You maintain a Trello card that serves as a living brief for a Slack topic.
+The card has a description (three sections: **Summary**, **Reactions**, **Threads**)
+and a checklist of action items.
 
 Current card description:
 ---
 {current_desc or "(empty — this is a new card)"}
 ---
 
+Current action items:
+{action_items_block}
+
 A new message just arrived in #{channel_name}:
 - From: {sender_name}
 - Text: {new_message[:2000]}
 
-Rewrite the **Summary** section to incorporate this new message. Keep it 1-3 sentences — dense,
-direct, no fluff. Preserve the **Reactions** and **Threads** sections EXACTLY as-is (or include
-empty placeholders if they don't exist yet).
+Do two things:
+1. Rewrite the **Summary** to incorporate this message. Keep it 1-3 sentences — dense, direct.
+   Preserve **Reactions** and **Threads** EXACTLY as-is (or add empty placeholders).
+2. Revise the action items: add new ones if the message creates tasks, mark completed ones as done
+   if the message resolves them, keep unchanged ones as-is. Action items should be concrete tasks
+   directed at me. Remove items only if they're clearly obsolete.
 
-Output the full card description (all three sections):
-
-**Summary**
-(your updated summary here)
-
-**Reactions**
-(preserve existing or write "No reactions yet.")
-
-**Threads**
-(preserve existing EXACTLY — do NOT modify this section)"""
+Respond with JSON (no markdown fences):
+{{
+    "description": "**Summary**\\n...\\n\\n**Reactions**\\n...\\n\\n**Threads**\\n...",
+    "action_items": [
+        {{"text": "item text", "completed": false}},
+        ...
+    ]
+}}"""
 
     response = llm.invoke(prompt)
-    return response.content.strip()
+    content = response.content.strip()
+
+    try:
+        if "```" in content:
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+            content = content.strip()
+        result = json.loads(content)
+        if isinstance(result, dict) and "description" in result:
+            return result
+    except (json.JSONDecodeError, IndexError):
+        logger.warning(f"Failed to parse Haiku JSON, falling back: {content[:200]}")
+
+    # Fallback: treat entire response as description, keep action items unchanged
+    return {
+        "description": content,
+        "action_items": current_action_items or [],
+    }
 
 
 def update_description_reactions(current_desc, reactor_name, reaction_emoji, original_text):
@@ -473,6 +537,70 @@ Output the full card description (all three sections):
 
     response = llm.invoke(prompt)
     return response.content.strip()
+
+
+# --- Checklist Sync ---
+
+
+def get_current_action_items(trello, card_id):
+    """Read current checklist items from a Trello card.
+
+    Returns list of {"id": str, "text": str, "completed": bool}.
+    """
+    checklists = trello.get_checklists(card_id)
+    if not checklists:
+        return []
+    items = []
+    for item in checklists[0].get("checkItems", []):
+        items.append({
+            "id": item["id"],
+            "text": item["name"],
+            "completed": item["state"] == "complete",
+        })
+    return items
+
+
+def sync_action_items(trello, card_id, current_items, revised_items):
+    """Sync revised action items back to the Trello checklist.
+
+    Matches by text similarity. Adds new items, updates completion state,
+    removes items not in the revised list.
+    """
+    checklists = trello.get_checklists(card_id)
+    if not checklists and revised_items:
+        checklist = trello.create_checklist(card_id)
+        checklist_id = checklist["id"]
+    elif checklists:
+        checklist_id = checklists[0]["id"]
+    else:
+        return
+
+    # Index current items by text for matching
+    current_by_text = {item["text"].lower().strip(): item for item in current_items}
+
+    revised_texts = set()
+    for revised in revised_items:
+        text = revised.get("text", "").strip()
+        if not text:
+            continue
+        revised_texts.add(text.lower())
+        match = current_by_text.get(text.lower())
+
+        if match:
+            # Update completion state if changed
+            if match["completed"] != revised.get("completed", False):
+                trello.update_checklist_item(card_id, match["id"], completed=revised["completed"])
+        else:
+            # New item
+            trello.add_checklist_item(checklist_id, text)
+
+    # Remove items no longer in the revised list
+    for item in current_items:
+        if item["text"].lower().strip() not in revised_texts:
+            try:
+                trello.delete_checklist_item(checklist_id, item["id"])
+            except Exception:
+                pass  # Non-critical if delete fails
 
 
 # --- Thread Tracking ---
@@ -711,9 +839,23 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
             if target_idx < current_idx:
                 trello.move_card(card_id, target_list_id)
 
-        # Update description via Haiku
+        # Get current checklist items for Haiku to revise
+        current_items = get_current_action_items(trello, card_id)
+
+        # Merge Opus action items (from classification) into current items for Haiku
+        existing_texts = {item["text"].lower().strip() for item in current_items}
+        for item_text in action_items:
+            if item_text.lower().strip() not in existing_texts:
+                current_items.append({"text": item_text, "completed": False})
+
+        # Update description + action items via Haiku
         current_desc = current_card.get("desc", "") if current_card else ""
-        new_desc = update_description_summary(current_desc, msg["channel"], msg["text"], msg["sender"])
+        result = update_description_summary(
+            current_desc, msg["channel"], msg["text"], msg["sender"],
+            current_action_items=current_items,
+        )
+        new_desc = result["description"]
+        revised_items = result.get("action_items", [])
 
         # Add thread tracking entry
         new_desc = append_thread_entry(
@@ -724,12 +866,24 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
         if current_card:
             current_card["desc"] = new_desc
 
+        # Sync action items
+        if current_items or revised_items:
+            sync_action_items(trello, card_id, current_items, revised_items)
+
         log_structured(trace_id, "trello_update", "success", {
             "card_id": card_id, "topic": topic_name, "priority": priority,
         })
     else:
         # --- Create new card ---
-        initial_desc = update_description_summary("", msg["channel"], msg["text"], msg["sender"])
+        # Seed with Opus action items
+        seed_items = [{"text": t, "completed": False} for t in action_items] if action_items else None
+
+        result = update_description_summary(
+            "", msg["channel"], msg["text"], msg["sender"],
+            current_action_items=seed_items,
+        )
+        initial_desc = result["description"]
+        revised_items = result.get("action_items", [])
 
         # Add thread tracking entry
         initial_desc = append_thread_entry(
@@ -740,21 +894,19 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
         card_id = card["id"]
         trello.add_comment(card_id, comment)
 
+        # Add action items to checklist
+        if revised_items:
+            checklist = trello.create_checklist(card_id)
+            for item in revised_items:
+                trello.add_checklist_item(checklist["id"], item.get("text", ""))
+
         # Track for other messages in this batch
         new_cards_by_topic[topic_name] = card_id
-        # Add to cards list so subsequent messages can find it
         cards.append({"id": card_id, "name": topic_name, "idList": target_list_id, "desc": initial_desc})
 
         log_structured(trace_id, "trello_create", "success", {
             "card_id": card_id, "topic": topic_name, "priority": priority,
         })
-
-    # Add action items
-    if action_items:
-        checklists = trello.get_checklists(card_id)
-        checklist_id = checklists[0]["id"] if checklists else trello.create_checklist(card_id)["id"]
-        for item in action_items:
-            trello.add_checklist_item(checklist_id, item)
 
 
 # --- Process Reactions ---

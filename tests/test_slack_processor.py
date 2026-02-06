@@ -99,22 +99,47 @@ class TestDescriptionUpdates:
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch("main.ChatAnthropic")
-    def test_summary_update(self, mock_anthropic_cls):
+    def test_summary_update_returns_structured(self, mock_anthropic_cls):
         mock_llm = MagicMock()
         mock_anthropic_cls.return_value = mock_llm
 
         mock_response = MagicMock()
-        mock_response.content = "**Summary**\nUpdated summary.\n\n**Reactions**\nNo reactions yet."
+        mock_response.content = json.dumps({
+            "description": "**Summary**\nUpdated summary.\n\n**Reactions**\nNo reactions yet.\n\n**Threads**\n",
+            "action_items": [{"text": "Review the PR", "completed": False}],
+        })
         mock_llm.invoke.return_value = mock_response
 
         result = processor.update_description_summary(
             "", "backend", "We should refactor the auth module", "Alice"
         )
 
-        assert "**Summary**" in result
-        assert "**Reactions**" in result
+        assert isinstance(result, dict)
+        assert "**Summary**" in result["description"]
+        assert len(result["action_items"]) == 1
+        assert result["action_items"][0]["text"] == "Review the PR"
         # Verify Haiku model used
         assert mock_anthropic_cls.call_args[1]["model"] == "claude-3-5-haiku-20241022"
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch("main.ChatAnthropic")
+    def test_summary_update_fallback_on_bad_json(self, mock_anthropic_cls):
+        mock_llm = MagicMock()
+        mock_anthropic_cls.return_value = mock_llm
+
+        mock_response = MagicMock()
+        mock_response.content = "**Summary**\nPlain text fallback.\n\n**Reactions**\nNone."
+        mock_llm.invoke.return_value = mock_response
+
+        result = processor.update_description_summary(
+            "", "backend", "message", "Alice",
+            current_action_items=[{"text": "existing item", "completed": False}],
+        )
+
+        assert isinstance(result, dict)
+        assert "**Summary**" in result["description"]
+        # Falls back to keeping existing action items
+        assert len(result["action_items"]) == 1
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch("main.ChatAnthropic")
@@ -242,7 +267,7 @@ class TestNewCardTracking:
     @patch("main.update_description_summary")
     def test_second_message_reuses_card_from_batch(self, mock_summary):
         """Two messages about the same new topic should use one card."""
-        mock_summary.return_value = "**Summary**\ntest\n\n**Reactions**\nNo reactions yet."
+        mock_summary.return_value = {"description": "**Summary**\ntest\n\n**Reactions**\nNo reactions yet.", "action_items": []}
 
         mock_trello = MagicMock()
         mock_trello.get_list_id.return_value = "list1"
@@ -294,7 +319,7 @@ class TestPriorityEscalation:
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
     @patch("main.update_description_summary")
     def test_card_escalated_from_worth_reading_to_needs_response(self, mock_summary):
-        mock_summary.return_value = "**Summary**\ntest\n\n**Reactions**\nNo reactions yet."
+        mock_summary.return_value = {"description": "**Summary**\ntest\n\n**Reactions**\nNo reactions yet.", "action_items": []}
 
         mock_trello = MagicMock()
         mock_trello.get_list_id.return_value = "list_needs"
@@ -321,7 +346,7 @@ class TestPriorityEscalation:
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
     @patch("main.update_description_summary")
     def test_card_not_demoted(self, mock_summary):
-        mock_summary.return_value = "**Summary**\ntest\n\n**Reactions**\nNo reactions yet."
+        mock_summary.return_value = {"description": "**Summary**\ntest\n\n**Reactions**\nNo reactions yet.", "action_items": []}
 
         mock_trello = MagicMock()
         mock_trello.get_list_id.return_value = "list_reading"
@@ -344,6 +369,40 @@ class TestPriorityEscalation:
 
         processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, cards, list_map, {})
         mock_trello.move_card.assert_not_called()
+
+
+class TestActionItemSync:
+    """Tests for checklist sync logic."""
+
+    def test_sync_adds_new_items(self):
+        mock_trello = MagicMock()
+        mock_trello.get_checklists.return_value = [{"id": "cl1", "checkItems": []}]
+
+        current = []
+        revised = [{"text": "Review PR", "completed": False}]
+
+        processor.sync_action_items(mock_trello, "card1", current, revised)
+        mock_trello.add_checklist_item.assert_called_once_with("cl1", "Review PR")
+
+    def test_sync_marks_completed(self):
+        mock_trello = MagicMock()
+        mock_trello.get_checklists.return_value = [{"id": "cl1", "checkItems": []}]
+
+        current = [{"id": "item1", "text": "Review PR", "completed": False}]
+        revised = [{"text": "Review PR", "completed": True}]
+
+        processor.sync_action_items(mock_trello, "card1", current, revised)
+        mock_trello.update_checklist_item.assert_called_once_with("card1", "item1", completed=True)
+
+    def test_sync_removes_obsolete(self):
+        mock_trello = MagicMock()
+        mock_trello.get_checklists.return_value = [{"id": "cl1", "checkItems": []}]
+
+        current = [{"id": "item1", "text": "Old task", "completed": False}]
+        revised = []
+
+        processor.sync_action_items(mock_trello, "card1", current, revised)
+        mock_trello.delete_checklist_item.assert_called_once_with("cl1", "item1")
 
 
 class TestThreadHandling:
