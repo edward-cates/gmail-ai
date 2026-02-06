@@ -598,7 +598,7 @@ Respond with a JSON array, one entry per message in the same order:
             return results
     except (json.JSONDecodeError, IndexError) as e:
         logger.error(f"Failed to parse batch classification ({e}): {content[:500]}")
-        raise ValueError(f"Opus returned unparseable response: {e}")
+        raise ValueError(f"Opus returned unparseable response: {e}") from e
 
 
 # --- Claude: Description Updates (Haiku) ---
