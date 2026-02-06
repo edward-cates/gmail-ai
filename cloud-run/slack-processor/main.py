@@ -201,7 +201,10 @@ class SlackClient:
         return f"{base}/archives/{channel_id}"
 
     def get_user_name(self, user_id):
-        """Get display name for a user (cached)."""
+        """Get display name for a user (cached).
+
+        Prefers profile.display_name > profile.real_name > real_name > name.
+        """
         if user_id in self._user_cache:
             return self._user_cache[user_id]
         r = requests.get(
@@ -214,7 +217,13 @@ class SlackClient:
         name = user_id
         if data.get("ok"):
             user = data["user"]
-            name = user.get("real_name") or user.get("name", user_id)
+            profile = user.get("profile", {})
+            name = (
+                profile.get("display_name")
+                or profile.get("real_name")
+                or user.get("real_name")
+                or user.get("name", user_id)
+            )
         self._user_cache[user_id] = name
         return name
 
@@ -240,9 +249,9 @@ class SlackClient:
         def replace_user(match):
             user_id = match.group(1)
             try:
-                return f"@{self.get_user_name(user_id)}"
+                return self.get_user_name(user_id)
             except Exception:
-                return f"@{user_id}"
+                return user_id
 
         def replace_channel(match):
             channel_id = match.group(1)
