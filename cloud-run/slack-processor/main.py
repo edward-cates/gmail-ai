@@ -454,7 +454,7 @@ def batch_classify_messages(messages_with_context, existing_topics, user_context
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set")
 
-    llm = ChatAnthropic(model=MODEL_CLASSIFY, api_key=api_key, max_tokens=4000)
+    llm = ChatAnthropic(model=MODEL_CLASSIFY, api_key=api_key, max_tokens=8000)
 
     context_block = (
         f"About me (use this to prioritize and group):\n{user_context}\n\n"
@@ -578,25 +578,32 @@ Respond with a JSON array, one entry per message in the same order:
 
     response = llm.invoke(prompt)
     content = response.content.strip()
+    logger.info(f"Opus response length: {len(content)} chars")
 
     try:
+        # Strip markdown code fences if present
         if "```" in content:
             content = content.split("```")[1]
             if content.startswith("json"):
                 content = content[4:]
             content = content.strip()
+        # Try to find JSON array if there's preamble text
+        if not content.startswith("["):
+            bracket_idx = content.find("[")
+            if bracket_idx >= 0:
+                content = content[bracket_idx:]
         results = json.loads(content)
         if isinstance(results, list):
             return results
-    except (json.JSONDecodeError, IndexError):
-        logger.warning(f"Failed to parse batch classification: {content[:300]}")
+    except (json.JSONDecodeError, IndexError) as e:
+        logger.warning(f"Failed to parse batch classification ({e}): {content[:500]}")
 
     # Fallback: return generic classifications
     return [
         {
             "msg_idx": m["idx"],
             "existing_topic_id": None,
-            "topic_name": f'{m["sender"]}: {m["text"][:40]}',
+            "topic_name": f'Unclassified: {m["channel"]}',
             "priority": "worth_reading",
             "action_items": [],
             "summary": m["text"][:200],
@@ -1093,7 +1100,7 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
     target_list_id = trello.get_list_id(target_list_name)
 
     existing_topic_id = classification.get("existing_topic_id")
-    topic_name = classification.get("topic_name", f'{msg["sender"]}: {msg["text"][:40]}')
+    topic_name = classification.get("topic_name", "Unclassified")
     action_items = classification.get("action_items", [])
 
     channel_link = slack.channel_link(msg["channel_id"])
