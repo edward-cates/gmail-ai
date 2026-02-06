@@ -569,11 +569,11 @@ Imagine these messages arrive in a batch:
 7. Alice: The rate limiting PR is up btw  (#backend)
 
 Correct grouping:
-- Messages 1 → "Auth PR review" (needs_response)
-- Messages 2 → "Staging cache deploy" (worth_reading)
-- Messages 3 → "Q2 planning doc" (action_required)
-- Messages 4, 7 → "API rate limiting" (worth_reading — Dave agrees with approach, Alice's PR is related)
-- Message 5 → "Frank back from leave" (worth_reading — personal update I'd want to see)
+- Messages 1 → "🔍 Auth PR review" (needs_response)
+- Messages 2 → "🚀 Staging cache deploy" (worth_reading)
+- Messages 3 → "📋 Q2 planning doc" (action_required)
+- Messages 4, 7 → "⚡ API rate limiting" (worth_reading — Dave agrees with approach, Alice's PR is related)
+- Message 5 → "👶 Frank back from leave" (worth_reading — personal update I'd want to see)
 - Message 6 → noise (bare "ok" with no meaningful context)
 
 Note: messages 1, 2, 4, 7 are ALL from #backend but are THREE different topics.
@@ -586,7 +586,7 @@ Respond with a JSON array, one entry per message in the same order:
     {{
         "msg_idx": 1,
         "existing_topic_id": "card id or null",
-        "topic_name": "short descriptive topic name (3-6 words)",
+        "topic_name": "emoji + short descriptive topic name (3-6 words), e.g. '🔍 Auth PR review'",
         "priority": "needs_response|action_required|worth_reading|noise",
         "action_items": ["action items directed at me, if any"],
         "summary": "1-2 sentence summary of this message's contribution to the topic"
