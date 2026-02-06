@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gmail AI Unsub Dashboard</title>
+    <title>Gmail AI Dashboard</title>
     <style>
         * {
             margin: 0;
@@ -25,236 +25,373 @@
             border-radius: 8px;
             margin-bottom: 20px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        h1 {
-            color: #333;
-            margin-bottom: 10px;
-        }
-        .stats {
-            display: flex;
-            gap: 20px;
-            margin-top: 10px;
-        }
-        .stat {
-            padding: 10px 15px;
-            background: #f0f0f0;
-            border-radius: 4px;
-        }
-        .stat-label {
-            font-size: 12px;
-            color: #666;
-            text-transform: uppercase;
-        }
-        .stat-value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #333;
-        }
-        .logs-container {
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }
-        .log-entry {
-            padding: 15px 20px;
-            border-bottom: 1px solid #eee;
-            transition: background 0.2s;
-        }
-        .log-entry:hover {
-            background: #f9f9f9;
-        }
-        .log-entry:last-child {
-            border-bottom: none;
-        }
-        .log-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 8px;
+            flex-wrap: wrap;
+            gap: 12px;
         }
-        .log-subject {
-            font-weight: 600;
+        h1 {
             color: #333;
-            font-size: 16px;
         }
-        .log-meta {
+        .stats {
             display: flex;
-            gap: 15px;
-            font-size: 12px;
-            color: #666;
+            gap: 12px;
+            flex-wrap: wrap;
         }
-        .log-snippet {
-            color: #555;
-            font-size: 14px;
-            margin-top: 8px;
-            line-height: 1.5;
+        .stat {
+            padding: 8px 14px;
+            background: #f0f0f0;
+            border-radius: 6px;
+            text-align: center;
         }
-        .log-stage {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
+        .stat-label {
             font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-        }
-        .stage-entry { background: #e3f2fd; color: #1976d2; }
-        .stage-query { background: #fff3e0; color: #e65100; }
-        .stage-mark { background: #e1f5fe; color: #0277bd; }
-        .stage-archive { background: #fce4ec; color: #c2185b; }
-        .stage-task_create { background: #f3e5f5; color: #7b1fa2; }
-        .stage-fetch { background: #f3e5f5; color: #7b1fa2; }
-        .stage-complete { background: #e8f5e9; color: #388e3c; }
-        .stage-skip { background: #f5f5f5; color: #616161; }
-        .stage-task_start { background: #e8f5e9; color: #2e7d32; }
-        .stage-job_start { background: #e8f5e9; color: #2e7d32; }
-        .stage-job_trigger { background: #ede7f6; color: #512da8; }
-        .stage-classification { background: #fff9c4; color: #f57f17; }
-        .stage-failure { background: #ffebee; color: #c62828; }
-        .classification-box {
-            background: #fffde7;
-            border: 1px solid #fff9c4;
-            border-radius: 4px;
-            padding: 8px 12px;
-            margin-top: 8px;
-        }
-        .classification-category {
-            font-weight: 600;
-            color: #f57f17;
-        }
-        .classification-confidence {
             color: #666;
-            font-size: 12px;
-        }
-        .classification-reason {
-            color: #555;
-            font-size: 13px;
-            margin-top: 4px;
-        }
-        .result-success { color: #388e3c; }
-        .result-failure { color: #c62828; }
-        .service-badge {
-            display: inline-block;
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-size: 10px;
-            font-weight: 600;
             text-transform: uppercase;
-            margin-left: 8px;
+            letter-spacing: 0.5px;
         }
-        .service-orchestrator { background: #e3f2fd; color: #1565c0; }
-        .service-processor { background: #fff3e0; color: #e65100; }
+        .stat-value {
+            font-size: 22px;
+            font-weight: bold;
+            color: #333;
+        }
         .refresh-btn {
             background: #1976d2;
             color: white;
             border: none;
             padding: 8px 16px;
-            border-radius: 4px;
+            border-radius: 6px;
             cursor: pointer;
             font-size: 14px;
         }
         .refresh-btn:hover {
             background: #1565c0;
         }
+
+        /* Trace groups */
+        .trace-group {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+            margin-bottom: 10px;
+            overflow: hidden;
+        }
+        .trace-group[open] {
+            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+        }
+        .trace-summary {
+            padding: 14px 20px;
+            cursor: pointer;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            user-select: none;
+        }
+        .trace-summary::-webkit-details-marker {
+            display: none;
+        }
+        .trace-summary:hover {
+            background: #fafafa;
+        }
+        .trace-expand {
+            color: #999;
+            font-size: 12px;
+            transition: transform 0.2s;
+            flex-shrink: 0;
+            width: 16px;
+        }
+        .trace-group[open] .trace-expand {
+            transform: rotate(90deg);
+        }
+        .trace-title {
+            font-weight: 600;
+            color: #333;
+            font-size: 15px;
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .trace-badges {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-shrink: 0;
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+        .badge-email { background: #e3f2fd; color: #1565c0; }
+        .badge-slack { background: #f3e5f5; color: #7b1fa2; }
+        .badge-success { background: #e8f5e9; color: #2e7d32; }
+        .badge-failure { background: #ffebee; color: #c62828; }
+        .badge-marketing { background: #fff3e0; color: #e65100; }
+        .badge-newsletter { background: #e8eaf6; color: #283593; }
+        .badge-noti { background: #f5f5f5; color: #616161; }
+        .badge-other { background: #e0f2f1; color: #00695c; }
+        .badge-needs_response { background: #ffebee; color: #c62828; }
+        .badge-action_required { background: #fff3e0; color: #e65100; }
+        .badge-worth_reading { background: #e8f5e9; color: #2e7d32; }
+        .trace-time {
+            font-size: 12px;
+            color: #999;
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+        .trace-count {
+            font-size: 11px;
+            color: #aaa;
+            flex-shrink: 0;
+        }
+
+        /* Log entries within a group */
+        .trace-entries {
+            border-top: 1px solid #eee;
+            background: #fafafa;
+        }
+        .log-entry {
+            padding: 10px 20px 10px 48px;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 13px;
+        }
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        .log-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .log-time {
+            color: #999;
+            font-size: 11px;
+            font-family: monospace;
+            flex-shrink: 0;
+            width: 80px;
+        }
+        .log-stage {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            flex-shrink: 0;
+            min-width: 90px;
+            text-align: center;
+        }
+        .stage-entry { background: #e3f2fd; color: #1976d2; }
+        .stage-event_received { background: #e3f2fd; color: #1976d2; }
+        .stage-query { background: #fff3e0; color: #e65100; }
+        .stage-mark { background: #e1f5fe; color: #0277bd; }
+        .stage-skip { background: #f5f5f5; color: #616161; }
+        .stage-job_start { background: #e8f5e9; color: #2e7d32; }
+        .stage-job_trigger { background: #ede7f6; color: #512da8; }
+        .stage-classification { background: #fff9c4; color: #f57f17; }
+        .stage-context { background: #f5f5f5; color: #616161; }
+        .stage-action { background: #fce4ec; color: #c2185b; }
+        .stage-summarize { background: #e0f7fa; color: #00838f; }
+        .stage-send_summary { background: #e0f7fa; color: #00838f; }
+        .stage-trello_fetch { background: #f3e5f5; color: #7b1fa2; }
+        .stage-trello_create { background: #f3e5f5; color: #7b1fa2; }
+        .stage-trello_update { background: #f3e5f5; color: #7b1fa2; }
+        .stage-trello_list { background: #f3e5f5; color: #7b1fa2; }
+        .stage-trello_action { background: #f3e5f5; color: #7b1fa2; }
+        .stage-event_stored { background: #e8f5e9; color: #2e7d32; }
+        .stage-batch_trigger { background: #ede7f6; color: #512da8; }
+        .stage-batch_start { background: #e3f2fd; color: #1565c0; }
+        .stage-batch_classify_start { background: #fff9c4; color: #f57f17; }
+        .stage-batch_classify_done { background: #fff9c4; color: #f57f17; }
+        .stage-batch_complete { background: #e8f5e9; color: #2e7d32; }
+        .stage-batch_empty { background: #f5f5f5; color: #616161; }
+        .log-service {
+            font-size: 10px;
+            color: #aaa;
+            flex-shrink: 0;
+        }
+        .log-detail {
+            color: #555;
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .log-detail-block {
+            margin-top: 6px;
+            margin-left: 90px;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .detail-classification {
+            background: #fffde7;
+            border: 1px solid #fff9c4;
+            color: #555;
+        }
+        .detail-error {
+            background: #ffebee;
+            border: 1px solid #ffcdd2;
+            color: #c62828;
+        }
+        .result-indicator {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .result-indicator.success { background: #4caf50; }
+        .result-indicator.failure { background: #ef5350; }
+
         .empty-state {
+            background: white;
+            border-radius: 8px;
             padding: 40px;
             text-align: center;
             color: #666;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
         }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>Gmail AI Unsub Dashboard</h1>
+            <h1>Gmail AI Dashboard</h1>
             <div class="stats">
                 <div class="stat">
-                    <div class="stat-label">Recent Logs</div>
-                    <div class="stat-value">{{ log_count }}</div>
+                    <div class="stat-label">Traces</div>
+                    <div class="stat-value">{{ total_traces }}</div>
                 </div>
+                <div class="stat">
+                    <div class="stat-label">Email</div>
+                    <div class="stat-value">{{ email_count }}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Slack</div>
+                    <div class="stat-value">{{ slack_count }}</div>
+                </div>
+                {% if failure_count > 0 %}
+                <div class="stat" style="background: #ffebee;">
+                    <div class="stat-label">Failures</div>
+                    <div class="stat-value" style="color: #c62828;">{{ failure_count }}</div>
+                </div>
+                {% endif %}
             </div>
             <button class="refresh-btn" onclick="location.reload()">Refresh</button>
         </header>
 
-        <div class="logs-container">
-            {% if logs %}
-                {% for log in logs %}
-                <div class="log-entry">
-                    <div class="log-header">
-                        <div class="log-subject">
-                            {% if log.metadata and log.metadata.subject %}
-                                {{ log.metadata.subject }}
-                            {% elif log.stage == 'entry' %}
-                                Pub/Sub message received
-                            {% else %}
-                                (No subject)
-                            {% endif %}
+        {% if groups %}
+            {% for group in groups %}
+            <details class="trace-group" {% if loop.index <= 3 %}open{% endif %}>
+                <summary class="trace-summary">
+                    <span class="trace-expand">&#9654;</span>
+                    <span class="trace-title">{{ group.summary.title }}</span>
+                    <span class="trace-badges">
+                        <span class="badge badge-{{ group.summary.pipeline }}">{{ group.summary.pipeline }}</span>
+                        {% if group.summary.category %}
+                        <span class="badge badge-{{ group.summary.category }}">{{ group.summary.category }}</span>
+                        {% endif %}
+                        {% if group.summary.priority %}
+                        <span class="badge badge-{{ group.summary.priority }}">{{ group.summary.priority | replace('_', ' ') }}</span>
+                        {% endif %}
+                        <span class="badge badge-{{ group.summary.status }}">{{ group.summary.status }}</span>
+                    </span>
+                    <span class="trace-count">{{ group.summary.entry_count }} log{{ 's' if group.summary.entry_count != 1 }}</span>
+                    <span class="trace-time">{{ group.summary.latest_timestamp[:19] | replace('T', ' ') if group.summary.latest_timestamp else '' }}</span>
+                </summary>
+                <div class="trace-entries">
+                    {% for entry in group.entries %}
+                    <div class="log-entry">
+                        <div class="log-row">
+                            <span class="result-indicator {{ entry.result or 'success' }}"></span>
+                            <span class="log-time">{{ entry.timestamp[11:19] if entry.timestamp and entry.timestamp|length > 19 else '' }}</span>
+                            <span class="log-stage stage-{{ entry.stage }}">{{ entry.stage }}</span>
+                            <span class="log-service">{{ entry.service or '' }}</span>
+                            <span class="log-detail">
+                                {% if entry.metadata and entry.metadata.text_preview %}
+                                    {{ entry.metadata.text_preview }}
+                                {% elif entry.metadata and entry.metadata.subject %}
+                                    {{ entry.metadata.subject }}
+                                {% elif entry.metadata and entry.metadata.topic %}
+                                    {{ entry.metadata.topic }}
+                                {% elif entry.metadata and entry.metadata.reaction %}
+                                    :{{ entry.metadata.reaction }}:
+                                {% elif entry.metadata and entry.metadata.reason %}
+                                    {{ entry.metadata.reason }}
+                                {% elif entry.metadata and entry.metadata.total_events is defined %}
+                                    {{ entry.metadata.total_events }} events pending
+                                {% elif entry.metadata and entry.metadata.message_count is defined %}
+                                    {{ entry.metadata.message_count }} messages, {{ entry.metadata.existing_topics }} topics
+                                {% elif entry.metadata and entry.metadata.messages is defined %}
+                                    {{ entry.metadata.messages }} messages, {{ entry.metadata.reactions }} reactions
+                                {% elif entry.metadata and entry.metadata.count is defined %}
+                                    {{ entry.metadata.count }} email(s) found
+                                {% elif entry.metadata and entry.metadata.job %}
+                                    {{ entry.metadata.job }}
+                                {% elif entry.metadata and entry.metadata.blob %}
+                                    queued → {{ entry.metadata.blob }}
+                                {% elif entry.metadata and entry.metadata.channel %}
+                                    #{{ entry.metadata.channel }}
+                                {% elif entry.metadata and entry.metadata.error %}
+                                    {{ entry.metadata.error[:80] }}
+                                {% endif %}
+                            </span>
                         </div>
-                        <span class="log-stage stage-{{ log.stage }}">
-                            {{ log.stage }}
-                        </span>
-                    </div>
-                    <div class="log-meta">
-                        <span>Email ID: {{ log.email_id if log.email_id != 'unknown' else 'Not yet parsed' }}</span>
-                        <span>Trace: {{ log.trace_id[:8] }}...</span>
-                        {% if log.service %}
-                        <span class="service-badge service-{{ log.service }}">{{ log.service }}</span>
+                        {% if entry.stage == 'classification' and entry.metadata %}
+                            {% if entry.metadata.category %}
+                            <div class="log-detail-block detail-classification">
+                                <strong>{{ entry.metadata.category }}</strong>
+                                {% if entry.metadata.confidence %}
+                                ({{ (entry.metadata.confidence * 100)|int }}%)
+                                {% endif %}
+                                {% if entry.metadata.reason %}
+                                &mdash; {{ entry.metadata.reason }}
+                                {% endif %}
+                            </div>
+                            {% elif entry.metadata.priority %}
+                            <div class="log-detail-block detail-classification">
+                                <strong>{{ entry.metadata.priority | replace('_', ' ') }}</strong>
+                                {% if entry.metadata.topic %}
+                                &mdash; {{ entry.metadata.topic }}
+                                {% endif %}
+                                {% if entry.metadata.summary %}
+                                <br>{{ entry.metadata.summary }}
+                                {% endif %}
+                            </div>
+                            {% endif %}
                         {% endif %}
-                        <span class="result-{{ log.result }}">{{ log.result }}</span>
-                        <span>{{ log.timestamp[:19] if log.timestamp else '' }}</span>
-                        {% if log.duration_ms %}
-                        <span>{{ log.duration_ms }}ms</span>
+                        {% if entry.result == 'failure' and entry.metadata and entry.metadata.error %}
+                        <div class="log-detail-block detail-error">
+                            {{ entry.metadata.error }}
+                        </div>
                         {% endif %}
                     </div>
-                    {% if log.stage == 'classification' and log.metadata %}
-                    <div class="classification-box">
-                        <span class="classification-category">{{ log.metadata.category }}</span>
-                        {% if log.metadata.confidence %}
-                        <span class="classification-confidence">({{ (log.metadata.confidence * 100)|int }}% confidence)</span>
-                        {% endif %}
-                        <div class="classification-reason">{{ log.metadata.reason }}</div>
-                    </div>
-                    {% elif log.metadata and log.metadata.snippet %}
-                    <div class="log-snippet">
-                        {{ log.metadata.snippet }}
-                    </div>
-                    {% elif log.metadata and log.metadata.error %}
-                    <div class="log-snippet" style="color: #c62828;">
-                        Error: {{ log.metadata.error }}
-                    </div>
-                    {% elif log.stage == 'query' and log.metadata and log.metadata.count is defined %}
-                    <div class="log-snippet" style="color: #666;">
-                        Found {{ log.metadata.count|int }} email(s) to process
-                    </div>
-                    {% elif log.stage == 'entry' %}
-                    <div class="log-snippet" style="color: #666;">
-                        Waiting to fetch email details...
-                    </div>
-                    {% elif log.stage == 'job_trigger' and log.metadata %}
-                    <div class="log-snippet" style="color: #512da8;">
-                        Triggered job: {{ log.metadata.job }}
-                    </div>
-                    {% elif log.stage == 'job_start' and log.metadata %}
-                    <div class="log-snippet" style="color: #2e7d32;">
-                        Processing: {{ log.metadata.subject or log.email_id }}
-                    </div>
-                    {% endif %}
+                    {% endfor %}
                 </div>
-                {% endfor %}
-            {% else %}
-                <div class="empty-state">
-                    <p>No logs found in the last 24 hours.</p>
-                    <p>Emails will appear here once Gmail Watch notifications are received.</p>
-                </div>
-            {% endif %}
-        </div>
+            </details>
+            {% endfor %}
+        {% else %}
+            <div class="empty-state">
+                <p>No logs found in the last 24 hours.</p>
+                <p>Events will appear here once Gmail or Slack notifications are processed.</p>
+            </div>
+        {% endif %}
     </div>
 
     <script>
-        // Auto-refresh every 10 seconds
+        // Auto-refresh every 30 seconds
         setTimeout(function() {
             location.reload();
-        }, 10000);
+        }, 30000);
     </script>
 </body>
 </html>

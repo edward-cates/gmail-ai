@@ -26,11 +26,34 @@ jobs:
       - name: Validate
         run: make validate
 
-  deploy:
-    needs: validate
+  changes:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    
+    outputs:
+      functions: ${{ steps.filter.outputs.functions }}
+      email-processor: ${{ steps.filter.outputs.email-processor }}
+      slack-processor: ${{ steps.filter.outputs.slack-processor }}
+      unsubscribe-service: ${{ steps.filter.outputs.unsubscribe-service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            functions:
+              - 'main.py'
+              - 'functions/**'
+            email-processor:
+              - 'cloud-run/email-processor/**'
+            slack-processor:
+              - 'cloud-run/slack-processor/**'
+            unsubscribe-service:
+              - 'cloud-run/unsubscribe-service/**'
+
+  deploy-functions:
+    needs: [validate, changes]
+    if: needs.changes.outputs.functions == 'true'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -42,8 +65,63 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Deploy Cloud Function
-        run: make deploy-function
+      - name: Deploy Cloud Functions
+        run: |
+          make deploy-function
+          make deploy-watch-renewal
+          make deploy-slack-function
+          make deploy-slack-batch-trigger
+
+  deploy-email-processor:
+    needs: [validate, changes]
+    if: needs.changes.outputs.email-processor == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
 
       - name: Deploy email-processor
         run: make deploy-email-processor
+
+  deploy-slack-processor:
+    needs: [validate, changes]
+    if: needs.changes.outputs.slack-processor == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy slack-processor
+        run: make deploy-slack-processor
+
+  deploy-unsubscribe-service:
+    needs: [validate, changes]
+    if: needs.changes.outputs.unsubscribe-service == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy unsubscribe-service
+        run: make deploy-unsubscribe-service
