@@ -330,6 +330,36 @@ class SlackClient:
             return data["messages"][0]
         return None
 
+    def get_channel_history(self, channel_id, limit=15):
+        """Fetch recent messages from a channel for classification context.
+
+        Returns list of {sender, text} dicts, oldest first.
+        """
+        r = requests.get(
+            f"{self.BASE_URL}/conversations.history",
+            headers=self._headers(),
+            params={"channel": channel_id, "limit": limit},
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("ok") and data.get("messages"):
+            msgs = data["messages"]  # newest first from API
+            result = []
+            for m in reversed(msgs):
+                user_id = m.get("user", "")
+                try:
+                    name = self.get_user_name(user_id)
+                except Exception:
+                    name = user_id
+                text = m.get("text", "")
+                try:
+                    text = self.resolve_mentions(text)
+                except Exception:
+                    pass
+                result.append({"sender": name, "text": text})
+            return result
+        return []
+
     def get_preceding_messages(self, channel_id, before_ts, count=3):
         """Fetch preceding messages in a channel for context.
 
@@ -408,13 +438,14 @@ PRIORITY_TO_LIST = {
 PRIORITY_ORDER = ["Needs Response", "Action Required", "Worth Reading", "Noted"]
 
 
-def batch_classify_messages(messages_with_context, existing_topics, user_context=""):
+def batch_classify_messages(messages_with_context, existing_topics, user_context="", channel_context=None):
     """Classify all messages in a single Opus call.
 
     Args:
         messages_with_context: list of {idx, text, sender, channel}
         existing_topics: list of {id, name, list_name}
         user_context: board description with user's context/memory
+        channel_context: dict of {channel_name: [{sender, text}, ...]} for conversation history
 
     Returns:
         list of classification dicts, one per message (in same order)
@@ -440,6 +471,16 @@ def batch_classify_messages(messages_with_context, existing_topics, user_context
         else "(no existing topics yet)"
     )
 
+    # Build channel context block
+    channel_context = channel_context or {}
+    channel_context_block = ""
+    if channel_context:
+        sections = []
+        for ch_name, msgs in channel_context.items():
+            lines = [f"  {m['sender']}: {m['text']}" for m in msgs]
+            sections.append(f"#{ch_name} (recent history):\n" + "\n".join(lines))
+        channel_context_block = "\n\n".join(sections)
+
     # Channel de-emphasized: trailing metadata, not leading identifier
     msg_lines = []
     for m in messages_with_context:
@@ -451,6 +492,10 @@ def batch_classify_messages(messages_with_context, existing_topics, user_context
 
     prompt = f"""You manage a Trello board that organizes my Slack messages by TOPIC for me.
 {context_block}
+## Recent channel conversations (for context — do NOT classify these, only the new messages below)
+
+{channel_context_block if channel_context_block else "(no channel history available)"}
+
 ## Step 1: Identify distinct topics
 
 Read ALL messages below. Identify the distinct SUBJECT MATTERS being discussed.
@@ -984,14 +1029,29 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
         if list_map.get(c["idList"]) != "Noted"
     ]
 
+    # Fetch recent history for channels in this batch
+    channel_ids_in_batch = {m["channel_id"]: m["channel"] for m in to_classify}
+    channel_context = {}
+    for channel_id, channel_name in channel_ids_in_batch.items():
+        try:
+            history = slack.get_channel_history(channel_id, limit=15)
+            if history:
+                channel_context[channel_name] = history
+        except Exception as e:
+            logger.warning(f"Failed to fetch history for #{channel_name}: {e}")
+
     log_structured(batch_trace_id, "batch_classify_start", metadata={
         "message_count": len(to_classify),
         "existing_topics": len(existing_topics),
+        "channels_with_context": len(channel_context),
     })
 
     # ONE Opus call for the entire batch
     try:
-        classifications = batch_classify_messages(to_classify, existing_topics, user_context)
+        classifications = batch_classify_messages(
+            to_classify, existing_topics, user_context,
+            channel_context=channel_context,
+        )
         log_structured(batch_trace_id, "batch_classify_done", "success", {
             "results": len(classifications),
         })
