@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import sys
+from datetime import datetime, timedelta
 
 import requests
 from google.cloud import storage
@@ -60,10 +61,41 @@ class TrelloClient:
         raise ValueError(f"List '{list_name}' not found on board")
 
     def get_cards(self):
-        """Get all cards on the board."""
+        """Get all open cards on the board."""
         r = requests.get(
             f"{self.BASE_URL}/boards/{self.board_id}/cards",
             params=self._params(),
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def get_archived_cards(self, since_hours=24):
+        """Get recently archived cards (closed within since_hours)."""
+        r = requests.get(
+            f"{self.BASE_URL}/boards/{self.board_id}/cards/closed",
+            params=self._params(fields="id,name,desc,idList,dateLastActivity,closed"),
+        )
+        r.raise_for_status()
+        all_closed = r.json()
+
+        cutoff = datetime.now(datetime.UTC) - timedelta(hours=since_hours)
+        recent = []
+        for card in all_closed:
+            last_activity = card.get("dateLastActivity", "")
+            try:
+                dt = datetime.fromisoformat(last_activity.replace("Z", "+00:00"))
+                if dt >= cutoff:
+                    card["_archived"] = True
+                    recent.append(card)
+            except (ValueError, TypeError):
+                pass
+        return recent
+
+    def unarchive_card(self, card_id):
+        """Reopen an archived card."""
+        r = requests.put(
+            f"{self.BASE_URL}/cards/{card_id}",
+            params=self._params(closed="false"),
         )
         r.raise_for_status()
         return r.json()
@@ -727,13 +759,17 @@ def _process_thread_reply(msg, slack, trello, cards, batch_trace_id):
     return True
 
 
-def process_messages(message_events, slack, trello, cards, list_map, batch_trace_id):
+def process_messages(message_events, slack, trello, cards, list_map, batch_trace_id, archived_cards=None):
     """Batch-classify messages with one Opus call, then update Trello.
 
     Thread replies skip classification entirely — they're matched to their
     parent card via thread_ts stored in the card description.
     """
+    archived_cards = archived_cards or []
     all_messages = _build_message_context(message_events, slack, batch_trace_id)
+
+    # Also check archived cards for thread replies
+    all_cards_for_threads = cards + archived_cards
 
     # Process thread replies first (no Opus needed)
     top_level = []
@@ -743,7 +779,7 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
     for msg in all_messages:
         if msg["is_thread_reply"]:
             try:
-                if _process_thread_reply(msg, slack, trello, cards, batch_trace_id):
+                if _process_thread_reply(msg, slack, trello, all_cards_for_threads, batch_trace_id):
                     thread_replies_handled += 1
                     continue
             except Exception as e:
@@ -769,21 +805,29 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
     for i, msg in enumerate(to_classify):
         msg["idx"] = i + 1
 
-    # Get existing topics
+    # Get existing topics (active cards, excluding Noted)
     existing_topics = [
         {"id": c["id"], "name": c["name"], "list_name": list_map.get(c["idList"], "Unknown")}
         for c in cards
         if list_map.get(c["idList"]) != "Noted"
     ]
 
+    # Include recently archived topics so Opus can match to them
+    archived_topics = [
+        {"id": c["id"], "name": c["name"], "list_name": "archived"}
+        for c in archived_cards
+    ]
+
     log_structured(batch_trace_id, "batch_classify_start", metadata={
         "message_count": len(to_classify),
         "existing_topics": len(existing_topics),
+        "archived_topics": len(archived_topics),
     })
 
     # ONE Opus call for the entire batch
     try:
-        classifications = batch_classify_messages(to_classify, existing_topics)
+        all_topics = existing_topics + archived_topics
+        classifications = batch_classify_messages(to_classify, all_topics)
         log_structured(batch_trace_id, "batch_classify_done", "success", {
             "results": len(classifications),
         })
@@ -794,6 +838,7 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
 
     # Process each classified message
     new_cards_by_topic = {}  # topic_name -> card_id
+    archived_ids = {c["id"] for c in archived_cards}
 
     for classification in classifications:
         msg_idx = classification.get("msg_idx", 0) - 1  # back to 0-indexed
@@ -807,14 +852,16 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
             _apply_classification(
                 classification, msg, trace_id,
                 trello, slack, cards, list_map, new_cards_by_topic,
+                archived_ids=archived_ids,
             )
         except Exception as e:
             logger.error(f"Failed to process message {msg_idx}: {e}")
             log_structured(trace_id, "trello_action", "failure", {"error": str(e)})
 
 
-def _apply_classification(classification, msg, trace_id, trello, slack, cards, list_map, new_cards_by_topic):
+def _apply_classification(classification, msg, trace_id, trello, slack, cards, list_map, new_cards_by_topic, archived_ids=None):
     """Apply a single classification result to Trello."""
+    archived_ids = archived_ids or set()
     priority = classification.get("priority", "worth_reading")
     target_list_name = PRIORITY_TO_LIST.get(priority, "Worth Reading")
     target_list_id = trello.get_list_id(target_list_name)
@@ -833,6 +880,20 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
     # Check if another message in this batch already created this topic
     if not existing_topic_id and topic_name in new_cards_by_topic:
         existing_topic_id = new_cards_by_topic[topic_name]
+
+    # Unarchive card if Opus matched to an archived topic
+    if existing_topic_id and existing_topic_id in archived_ids:
+        try:
+            trello.unarchive_card(existing_topic_id)
+            trello.move_card(existing_topic_id, target_list_id)
+            archived_ids.discard(existing_topic_id)
+            logger.info(f"Unarchived card {existing_topic_id} → {target_list_name}")
+            log_structured(trace_id, "trello_unarchive", "success", {
+                "card_id": existing_topic_id, "target_list": target_list_name,
+            })
+        except Exception as e:
+            logger.error(f"Failed to unarchive card {existing_topic_id}: {e}")
+            existing_topic_id = None  # Fall through to create new card
 
     if existing_topic_id:
         # --- Update existing card ---
@@ -1015,6 +1076,8 @@ def main():
         lists = trello.get_lists()
         list_map = {lst["id"]: lst["name"] for lst in lists}
         cards = trello.get_cards()
+        archived_cards = trello.get_archived_cards(since_hours=24)
+        logger.info(f"Board: {len(cards)} open, {len(archived_cards)} recently archived")
     except Exception as e:
         logger.error(f"Failed to fetch Trello board: {e}")
         log_structured(batch_trace_id, "trello_fetch", "failure", {"error": str(e)})
@@ -1022,7 +1085,7 @@ def main():
 
     # Process messages (one Opus call for the batch)
     if messages:
-        process_messages(messages, slack, trello, cards, list_map, batch_trace_id)
+        process_messages(messages, slack, trello, cards, list_map, batch_trace_id, archived_cards)
 
     # Process reactions (Haiku only, per reaction)
     if reactions:
