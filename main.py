@@ -4,7 +4,7 @@ Entry point for Google Cloud Functions:
 - handle_pubsub_event: Triggered by Pub/Sub (Gmail Watch)
 - renew_watch_http: Triggered by Cloud Scheduler
 - handle_slack_event: Triggered by Slack Events API (HTTP)
-- trigger_slack_batch_http: Triggered by Cloud Scheduler (every 2 min)
+- trigger_slack_batch_http: Triggered by Cloud Scheduler (every 15 min)
 """
 
 from functions.pubsub_handler import handle_pubsub

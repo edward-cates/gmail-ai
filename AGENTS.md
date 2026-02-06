@@ -16,7 +16,7 @@ Gmail Watch → Pub/Sub → Cloud Function → Cloud Run Job (email-processor)
                                     Classify → Act → Log
 
 Slack Events API → Cloud Function → Cloud Storage (queue)
-                                        ↓ (every 2 min)
+                                        ↓ (every 15 min)
                               Cloud Scheduler → Cloud Function → Cloud Run Job (slack-processor)
                                                                       ↓
                                                           Classify (Opus) → Update Trello (Haiku)
@@ -53,7 +53,7 @@ Emails with subject starting with `🤖` are skipped (app's own emails).
 
 | Model | Role | When |
 |-------|------|------|
-| Opus 4.6 (`claude-opus-4-6`) | Batch topic classification + priority | One call per batch (every 2 min) |
+| Opus 4.6 (`claude-opus-4-6`) | Batch topic classification + priority | One call per batch (every 15 min) |
 | Haiku (`claude-3-5-haiku-20241022`) | Card description updates, action item revision, reaction interpretation | Per-card, cheap |
 
 ### Priorities
@@ -71,7 +71,7 @@ fetched as context, so Opus can distinguish noise ("ok!") from meaningful agreem
 ### Batch Processing
 
 1. Slack handler receives events via HTTP webhook, stores them in `gs://gmail-ai-logs/slack-pending/`
-2. Cloud Scheduler triggers batch function every 5 minutes
+2. Cloud Scheduler triggers batch function every 15 minutes
 3. Batch function checks for pending events, triggers slack-processor Cloud Run Job
 4. Processor reads all pending events, classifies in one Opus call, updates Trello, deletes events
 

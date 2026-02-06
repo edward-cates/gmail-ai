@@ -440,16 +440,25 @@ def batch_classify_messages(messages_with_context, existing_topics, user_context
         else "(no existing topics yet)"
     )
 
+    # Channel de-emphasized: trailing metadata, not leading identifier
     msg_lines = []
     for m in messages_with_context:
-        line = f'{m["idx"]}. [#{m["channel"]}] {m["sender"]}: {m["text"][:1500]}'
+        line = f'{m["idx"]}. {m["sender"]}: {m["text"][:1500]}  (#{m["channel"]})'
         if m.get("preceding_context"):
-            line = f'{m["idx"]}. [#{m["channel"]}] {m["sender"]}: {m["text"][:1500]}\n   Preceding conversation:\n{m["preceding_context"]}'
+            line += f'\n   Preceding conversation:\n{m["preceding_context"]}'
         msg_lines.append(line)
     messages_block = "\n".join(msg_lines)
 
-    prompt = f"""You manage a Trello board that organizes Slack messages by topic for me.
-{context_block}Process this batch of {len(messages_with_context)} new messages.
+    prompt = f"""You manage a Trello board that organizes my Slack messages by TOPIC for me.
+{context_block}
+## Step 1: Identify distinct topics
+
+Read ALL messages below. Identify the distinct SUBJECT MATTERS being discussed.
+A topic is a specific project, decision, question, event, or ongoing thread — NOT a channel.
+
+## Step 2: Assign each message to a topic
+
+Match each message to an existing board topic OR one of the topics you just identified.
 
 Existing topics on the board:
 {topics_list}
@@ -457,33 +466,67 @@ Existing topics on the board:
 Messages to classify:
 {messages_block}
 
-For EACH message, determine:
-1. Does it belong to an existing topic (give the card id) or is it new?
-2. Priority: needs_response | action_required | worth_reading | noise
-   - needs_response: someone is waiting on ME specifically
-   - action_required: I need to do something (review, approve, decide) but nobody's blocked
-   - worth_reading: relevant info, no action needed from me
-   - noise: zero informational value — "thanks!", "ok", emoji-only, "got it", etc.
-     HOWEVER: if the preceding context shows the person is agreeing/consenting to
-     something actionable, that is NOT noise (classify based on what they're agreeing to).
-3. Any action items directed at me
-4. A 1-2 sentence summary
-5. A short topic name (3-6 words) if new
+## Rules
 
-IMPORTANT: Multiple messages may belong to the same topic. If two messages in this
-batch are about the same thing, give them the same existing_topic_id or the same
-new topic_name so they get grouped together. Prefer matching to existing topics
-over creating new ones — group aggressively.
+CRITICAL: Topics must describe SUBJECT MATTER, never channels.
+- WRONG: "backend discussion", "#design-reviews chat", "general updates"
+- RIGHT: "Auth module refactor", "Q2 hiring plan", "Production outage Jan 15"
+
+Messages from DIFFERENT channels often belong to the SAME topic (e.g. someone discusses
+a deploy in #backend and #general — that's one topic). Messages in the SAME channel
+are often about DIFFERENT topics.
+
+Prefer matching to existing topics over creating new ones — group aggressively by
+subject, not by channel or time.
+
+## Priority
+
+For each message, assign a priority:
+- **needs_response**: someone is waiting on ME specifically to reply
+- **action_required**: I need to do something (review, approve, decide) but nobody's blocked
+- **worth_reading**: relevant info, no action needed from me — includes life updates,
+  what people are up to, social/personal messages that I'd want to see
+- **noise**: zero informational value — "thanks!", "ok", emoji-only, "got it", "+1", "lol"
+  HOWEVER: if preceding context shows someone is agreeing/consenting to something
+  actionable, that is NOT noise — classify based on what they're agreeing to.
+
+## Examples
+
+Imagine these messages arrive in a batch:
+
+1. Alice: Can you review the auth PR when you get a chance?  (#backend)
+2. Bob: Deployed the new caching layer to staging  (#backend)
+3. Carol: Has anyone seen the Q2 planning doc?  (#general)
+4. Dave: yeah I think that approach works 👍  (#backend)
+   Preceding conversation:
+     Alice: Should we add rate limiting to the API?
+     Eve: I was thinking token bucket
+5. Frank: Just got back from paternity leave! Baby is doing great 🎉  (#random)
+6. Grace: ok  (#general)
+7. Alice: The rate limiting PR is up btw  (#backend)
+
+Correct grouping:
+- Messages 1 → "Auth PR review" (needs_response)
+- Messages 2 → "Staging cache deploy" (worth_reading)
+- Messages 3 → "Q2 planning doc" (action_required)
+- Messages 4, 7 → "API rate limiting" (worth_reading — Dave agrees with approach, Alice's PR is related)
+- Message 5 → "Frank back from leave" (worth_reading — personal update I'd want to see)
+- Message 6 → noise (bare "ok" with no meaningful context)
+
+Note: messages 1, 2, 4, 7 are ALL from #backend but are THREE different topics.
+Message 4 is NOT noise because context shows Dave is agreeing to a technical approach.
+
+## Output
 
 Respond with a JSON array, one entry per message in the same order:
 [
     {{
         "msg_idx": 1,
         "existing_topic_id": "card id or null",
-        "topic_name": "short topic name",
+        "topic_name": "short descriptive topic name (3-6 words)",
         "priority": "needs_response|action_required|worth_reading|noise",
-        "action_items": [],
-        "summary": "brief summary"
+        "action_items": ["action items directed at me, if any"],
+        "summary": "1-2 sentence summary of this message's contribution to the topic"
     }},
     ...
 ]"""
@@ -508,7 +551,7 @@ Respond with a JSON array, one entry per message in the same order:
         {
             "msg_idx": m["idx"],
             "existing_topic_id": None,
-            "topic_name": f'#{m["channel"]} discussion',
+            "topic_name": f'{m["sender"]}: {m["text"][:40]}',
             "priority": "worth_reading",
             "action_items": [],
             "summary": m["text"][:200],
