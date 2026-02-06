@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 from google.cloud import storage
@@ -78,7 +78,7 @@ class TrelloClient:
         r.raise_for_status()
         all_closed = r.json()
 
-        cutoff = datetime.now(datetime.UTC) - timedelta(hours=since_hours)
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=since_hours)  # noqa: UP017
         recent = []
         for card in all_closed:
             last_activity = card.get("dateLastActivity", "")
