@@ -11,6 +11,7 @@ Models:
 import json
 import logging
 import os
+import re
 import sys
 
 import requests
@@ -211,6 +212,29 @@ class SlackClient:
             name = data["channel"].get("name", channel_id)
         self._channel_cache[channel_id] = name
         return name
+
+    def resolve_mentions(self, text):
+        """Replace <@U123> user mentions and <#C123> channel mentions with readable names."""
+        def replace_user(match):
+            user_id = match.group(1)
+            try:
+                return f"@{self.get_user_name(user_id)}"
+            except Exception:
+                return f"@{user_id}"
+
+        def replace_channel(match):
+            channel_id = match.group(1)
+            # <#C123|name> format already has the name
+            if match.group(2):
+                return f"#{match.group(2)}"
+            try:
+                return f"#{self.get_channel_name(channel_id)}"
+            except Exception:
+                return f"#{channel_id}"
+
+        text = re.sub(r"<@(\w+)>", replace_user, text)
+        text = re.sub(r"<#(\w+)(?:\|([^>]+))?>", replace_channel, text)
+        return text
 
     def get_message(self, channel_id, message_ts):
         """Fetch a single message by channel and timestamp."""
@@ -478,6 +502,7 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
         try:
             sender = slack.get_user_name(user_id)
             channel = slack.get_channel_name(channel_id)
+            text = slack.resolve_mentions(text)
         except Exception:
             sender = user_id
             channel = channel_id
