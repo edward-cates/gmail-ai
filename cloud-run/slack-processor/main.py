@@ -357,7 +357,7 @@ class SlackClient:
                     text = self.resolve_mentions(text)
                 except Exception:
                     pass
-                result.append({"sender": name, "text": text})
+                result.append({"sender": name, "text": text[:300]})
             return result
         return []
 
