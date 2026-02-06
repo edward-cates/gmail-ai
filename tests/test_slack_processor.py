@@ -41,7 +41,7 @@ class TestBatchClassification:
         assert result[0]["priority"] == "worth_reading"
         # Verify Opus model used
         mock_anthropic_cls.assert_called_once()
-        assert mock_anthropic_cls.call_args[1]["model"] == "claude-opus-4-6"
+        assert mock_anthropic_cls.call_args[1]["model"] == "claude-sonnet-4-5"
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch("main.ChatAnthropic")

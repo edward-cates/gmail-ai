@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # --- Model Config ---
 
-MODEL_CLASSIFY = "claude-opus-4-6"  # batch topic matching — one call for N messages
+MODEL_CLASSIFY = "claude-sonnet-4-5"  # batch topic matching — one call for N messages
 MODEL_SUMMARIZE = "claude-3-5-haiku-20241022"  # description updates — cheap and fast
 
 

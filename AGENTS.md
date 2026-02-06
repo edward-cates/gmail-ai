@@ -53,7 +53,7 @@ Emails with subject starting with `🤖` are skipped (app's own emails).
 
 | Model | Role | When |
 |-------|------|------|
-| Opus 4.6 (`claude-opus-4-6`) | Batch topic classification + priority | One call per batch (every 15 min) |
+| Sonnet 4.5 (`claude-sonnet-4-5`) | Batch topic classification + priority | One call per batch (every 15 min) |
 | Haiku (`claude-3-5-haiku-20241022`) | Card description updates, action item revision, reaction interpretation | Per-card, cheap |
 
 ### Priorities
