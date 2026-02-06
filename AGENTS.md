@@ -16,10 +16,10 @@ Gmail Watch → Pub/Sub → Cloud Function → Cloud Run Job (email-processor)
                                     Classify → Act → Log
 
 Slack Events API → Cloud Function → Cloud Storage (queue)
-                                        ↓ (every 15 min)
+                                        ↓ (every 15 min, configurable)
                               Cloud Scheduler → Cloud Function → Cloud Run Job (slack-processor)
                                                                       ↓
-                                                          Classify (Opus) → Update Trello (Haiku)
+                                                          Classify (Sonnet) → Update Trello (Haiku)
 ```
 
 All code is standalone with no cross-imports between top-level directories:
@@ -66,22 +66,25 @@ Emails with subject starting with `🤖` are skipped (app's own emails).
 | `noise` | Zero informational value ("thanks!", "ok", emoji-only) | Silently dropped, never reaches Trello |
 
 Short messages (< 20 chars) that are NOT thread replies get 3 preceding channel messages
-fetched as context, so Opus can distinguish noise ("ok!") from meaningful agreement.
+fetched as context, so Sonnet can distinguish noise ("ok!") from meaningful agreement.
 
 ### Batch Processing
 
 1. Slack handler receives events via HTTP webhook, stores them in `gs://gmail-ai-logs/slack-pending/`
-2. Cloud Scheduler triggers batch function every 15 minutes
+2. Cloud Scheduler triggers batch function (default: every 15 min, change via `./scripts/set_batch_interval.sh`)
 3. Batch function checks for pending events, triggers slack-processor Cloud Run Job
-4. Processor reads all pending events, classifies in one Opus call, updates Trello, deletes events
+4. Processor reads all pending events, **clears queue immediately**, then classifies
+5. For each channel in the batch, fetches last 15 messages from Slack API as conversation context
+6. One Sonnet call classifies all messages with full context, then updates Trello per message
 
-This amortizes expensive Opus calls across multiple messages.
+Queue is cleared before processing to prevent reprocessing on timeout/crash.
+No fallback on parse failure — errors are logged and the batch is skipped.
 
 ### Thread Handling
 
-Thread replies (messages with `thread_ts != ts`) skip Opus classification entirely:
+Thread replies (messages with `thread_ts != ts`) skip classification entirely:
 - Processor matches `thread_ts` against `ts:` markers stored in card descriptions
-- If parent card found → add comment directly (no Opus call)
+- If parent card found → add comment directly (no Sonnet call)
 - If parent not found → fall back to normal classification
 
 ### Trello Board
@@ -108,7 +111,21 @@ Each card = a topic.
 **Checklist** — Action items, managed by Haiku during summary updates:
 - New items added when messages create tasks
 - Items marked complete when conversation resolves them
-- Opus provides initial action items during classification; Haiku revises on each update
+- All items unchecked when an existing card receives a new message
+- Sonnet provides initial action items during classification; Haiku revises on each update
+
+### Board Description (Memory)
+
+The Trello board description acts as persistent user context / memory.
+Haiku updates it after each batch with observations about projects, people, priorities.
+Sonnet reads it during classification to improve grouping. User can view and edit it
+directly in Trello (click board name → "About this board").
+
+### Logging & Debugging
+
+All batch events share a single `batch_trace_id` (one collapsible group in dashboard).
+Timing is logged for: channel context fetch, Sonnet call, total batch duration.
+On parse failure, the first 500 chars of Sonnet's response are logged for debugging.
 
 ### User Mentions
 
@@ -170,6 +187,14 @@ make deploy-slack-processor  # Slack→Trello processor
 make deploy-function         # Gmail Pub/Sub handler
 make deploy-slack-function   # Slack event handler
 make check-logs
+```
+
+## Batch Interval
+
+```bash
+./scripts/set_batch_interval.sh 5    # every 5 min
+./scripts/set_batch_interval.sh 15   # every 15 min
+./scripts/set_batch_interval.sh      # show current
 ```
 
 ## Secrets
