@@ -136,23 +136,46 @@ class SlackClient:
         if not self.token:
             raise ValueError("SLACK_BOT_TOKEN must be set")
         self._authed_user_id = None
+        self._workspace_url = None
         self._user_cache = {}
         self._channel_cache = {}
 
     def _headers(self):
         return {"Authorization": f"Bearer {self.token}"}
 
-    def get_authed_user_id(self):
-        """Get the authenticated user's Slack ID (cached)."""
-        if self._authed_user_id:
-            return self._authed_user_id
+    def _ensure_auth(self):
+        """Call auth.test once and cache user_id + workspace URL."""
+        if self._authed_user_id and self._workspace_url:
+            return
         r = requests.get(f"{self.BASE_URL}/auth.test", headers=self._headers())
         r.raise_for_status()
         data = r.json()
         if data.get("ok"):
             self._authed_user_id = data["user_id"]
-            return self._authed_user_id
-        raise ValueError(f"auth.test failed: {data}")
+            self._workspace_url = data.get("url", "").rstrip("/")
+        else:
+            raise ValueError(f"auth.test failed: {data}")
+
+    def get_authed_user_id(self):
+        """Get the authenticated user's Slack ID (cached)."""
+        self._ensure_auth()
+        return self._authed_user_id
+
+    def get_workspace_url(self):
+        """Get the Slack workspace URL (cached)."""
+        self._ensure_auth()
+        return self._workspace_url
+
+    def message_link(self, channel_id, message_ts):
+        """Build a deep link to a specific Slack message."""
+        base = self.get_workspace_url()
+        ts_clean = message_ts.replace(".", "")
+        return f"{base}/archives/{channel_id}/p{ts_clean}"
+
+    def channel_link(self, channel_id):
+        """Build a deep link to a Slack channel."""
+        base = self.get_workspace_url()
+        return f"{base}/archives/{channel_id}"
 
     def get_user_name(self, user_id):
         """Get display name for a user (cached)."""
@@ -450,6 +473,7 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
         user_id = event.get("user", "")
         channel_id = event.get("channel", "")
         text = event.get("text", "")
+        message_ts = event.get("ts", "")
 
         try:
             sender = slack.get_user_name(user_id)
@@ -465,6 +489,7 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
             "channel": channel,
             "channel_id": channel_id,
             "user_id": user_id,
+            "ts": message_ts,
             "trace_id": evt.get("trace_id", batch_trace_id),
         })
 
@@ -506,14 +531,14 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
         try:
             _apply_classification(
                 classification, msg, trace_id,
-                trello, cards, list_map, new_cards_by_topic,
+                trello, slack, cards, list_map, new_cards_by_topic,
             )
         except Exception as e:
             logger.error(f"Failed to process message {msg_idx}: {e}")
             log_structured(trace_id, "trello_action", "failure", {"error": str(e)})
 
 
-def _apply_classification(classification, msg, trace_id, trello, cards, list_map, new_cards_by_topic):
+def _apply_classification(classification, msg, trace_id, trello, slack, cards, list_map, new_cards_by_topic):
     """Apply a single classification result to Trello."""
     priority = classification.get("priority", "worth_reading")
     target_list_name = PRIORITY_TO_LIST.get(priority, "Worth Reading")
@@ -523,7 +548,12 @@ def _apply_classification(classification, msg, trace_id, trello, cards, list_map
     topic_name = classification.get("topic_name", f'#{msg["channel"]} discussion')
     action_items = classification.get("action_items", [])
 
-    comment = f'**{msg["sender"]}** in #{msg["channel"]}:\n{msg["text"]}'
+    channel_link = slack.channel_link(msg["channel_id"])
+    msg_link = slack.message_link(msg["channel_id"], msg["ts"]) if msg.get("ts") else ""
+
+    comment = f'**{msg["sender"]}** in [#{msg["channel"]}]({channel_link}):\n{msg["text"]}'
+    if msg_link:
+        comment += f'\n\n[View message]({msg_link})'
 
     # Check if another message in this batch already created this topic
     if not existing_topic_id and topic_name in new_cards_by_topic:

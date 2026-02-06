@@ -253,6 +253,10 @@ class TestNewCardTracking:
         list_map = {}
         new_cards_by_topic = {}
 
+        mock_slack = MagicMock()
+        mock_slack.channel_link.return_value = "https://slack.com/archives/C1"
+        mock_slack.message_link.return_value = "https://slack.com/archives/C1/p111"
+
         # First message creates the card
         classification1 = {
             "existing_topic_id": None,
@@ -260,9 +264,9 @@ class TestNewCardTracking:
             "priority": "worth_reading",
             "action_items": [],
         }
-        msg1 = {"sender": "Alice", "channel": "general", "text": "New feature idea", "channel_id": "C1", "user_id": "U1"}
+        msg1 = {"sender": "Alice", "channel": "general", "text": "New feature idea", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
 
-        processor._apply_classification(classification1, msg1, "t1", mock_trello, cards, list_map, new_cards_by_topic)
+        processor._apply_classification(classification1, msg1, "t1", mock_trello, mock_slack, cards, list_map, new_cards_by_topic)
         assert mock_trello.create_card.call_count == 1
 
         # Second message with same topic name should reuse
@@ -272,9 +276,9 @@ class TestNewCardTracking:
             "priority": "worth_reading",
             "action_items": [],
         }
-        msg2 = {"sender": "Bob", "channel": "general", "text": "I agree on the feature", "channel_id": "C1", "user_id": "U2"}
+        msg2 = {"sender": "Bob", "channel": "general", "text": "I agree on the feature", "channel_id": "C1", "user_id": "U2", "ts": "222.333"}
 
-        processor._apply_classification(classification2, msg2, "t2", mock_trello, cards, list_map, new_cards_by_topic)
+        processor._apply_classification(classification2, msg2, "t2", mock_trello, mock_slack, cards, list_map, new_cards_by_topic)
         # Should NOT create a second card
         assert mock_trello.create_card.call_count == 1
         # Should add comment to existing card
@@ -299,15 +303,19 @@ class TestPriorityEscalation:
         cards = [{"id": "card1", "name": "Topic", "idList": "list_reading", "desc": "#general | stuff"}]
         list_map = {"list_reading": "Worth Reading", "list_needs": "Needs Response"}
 
+        mock_slack = MagicMock()
+        mock_slack.channel_link.return_value = "https://slack.com/archives/C1"
+        mock_slack.message_link.return_value = "https://slack.com/archives/C1/p111"
+
         classification = {
             "existing_topic_id": "card1",
             "topic_name": "Topic",
             "priority": "needs_response",
             "action_items": [],
         }
-        msg = {"sender": "Alice", "channel": "general", "text": "Can you review?", "channel_id": "C1", "user_id": "U1"}
+        msg = {"sender": "Alice", "channel": "general", "text": "Can you review?", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
 
-        processor._apply_classification(classification, msg, "t1", mock_trello, cards, list_map, {})
+        processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, cards, list_map, {})
         mock_trello.move_card.assert_called_once_with("card1", "list_needs")
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
@@ -322,13 +330,17 @@ class TestPriorityEscalation:
         cards = [{"id": "card1", "name": "Topic", "idList": "list_needs", "desc": "#general | stuff"}]
         list_map = {"list_needs": "Needs Response", "list_reading": "Worth Reading"}
 
+        mock_slack = MagicMock()
+        mock_slack.channel_link.return_value = "https://slack.com/archives/C1"
+        mock_slack.message_link.return_value = "https://slack.com/archives/C1/p111"
+
         classification = {
             "existing_topic_id": "card1",
             "topic_name": "Topic",
             "priority": "worth_reading",
             "action_items": [],
         }
-        msg = {"sender": "Alice", "channel": "general", "text": "FYI", "channel_id": "C1", "user_id": "U1"}
+        msg = {"sender": "Alice", "channel": "general", "text": "FYI", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
 
-        processor._apply_classification(classification, msg, "t1", mock_trello, cards, list_map, {})
+        processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, cards, list_map, {})
         mock_trello.move_card.assert_not_called()
