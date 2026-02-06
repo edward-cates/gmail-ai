@@ -174,7 +174,7 @@ def _build_trace_summary(trace_id: str, entries: list[dict]) -> dict:
 
     # Build display title
     if batch_messages is not None:
-        title = f"Batch: {batch_messages} messages, {batch_reactions or 0} reactions"
+        title = f"\U0001f4e6 Batch: {batch_messages} messages, {batch_reactions or 0} reactions"
     elif pipeline == "slack" and topic:
         title = topic
     elif pipeline == "slack" and text_preview:

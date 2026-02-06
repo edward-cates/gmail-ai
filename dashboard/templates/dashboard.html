@@ -325,7 +325,7 @@
 
         {% if groups %}
             {% for group in groups %}
-            <details class="trace-group" data-pipeline="{{ group.summary.pipeline }}" {% if loop.index <= 3 %}open{% endif %}>
+            <details class="trace-group" data-pipeline="{{ group.summary.pipeline }}">
                 <summary class="trace-summary">
                     <span class="trace-expand">&#9654;</span>
                     <span class="trace-title">{{ group.summary.title }}</span>
@@ -422,7 +422,33 @@
     </div>
 
     <script>
-        // Filter traces by pipeline
+        // --- Persist open/collapsed state across refreshes ---
+        var STORAGE_KEY = 'dashboard_open_traces';
+
+        function getOpenTraces() {
+            try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); }
+            catch(e) { return {}; }
+        }
+
+        function saveOpenTraces() {
+            var open = {};
+            document.querySelectorAll('.trace-group').forEach(function(g, i) {
+                if (g.open) open[i] = true;
+            });
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(open));
+        }
+
+        // Restore open state on load (overrides server-side defaults)
+        var savedOpen = getOpenTraces();
+        var hasState = Object.keys(savedOpen).length > 0;
+        document.querySelectorAll('.trace-group').forEach(function(g, i) {
+            if (hasState) {
+                g.open = !!savedOpen[i];
+            }
+            g.addEventListener('toggle', saveOpenTraces);
+        });
+
+        // --- Filter traces by pipeline ---
         document.querySelectorAll('.filter-btn').forEach(function(btn) {
             btn.addEventListener('click', function() {
                 var filter = this.dataset.filter;
@@ -437,7 +463,6 @@
                     }
                 });
 
-                // Update URL without reload
                 var url = new URL(window.location);
                 if (filter === 'all') { url.searchParams.delete('filter'); }
                 else { url.searchParams.set('filter', filter); }
@@ -455,6 +480,7 @@
 
         // Auto-refresh every 30 seconds
         setTimeout(function() {
+            saveOpenTraces();
             location.reload();
         }, 30000);
     </script>
