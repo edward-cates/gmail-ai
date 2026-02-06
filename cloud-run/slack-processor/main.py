@@ -46,6 +46,24 @@ class TrelloClient:
     def _params(self, **extra):
         return {"key": self.api_key, "token": self.token, **extra}
 
+    def get_board_desc(self):
+        """Get the board description (used as user context/memory)."""
+        r = requests.get(
+            f"{self.BASE_URL}/boards/{self.board_id}",
+            params=self._params(fields="desc"),
+        )
+        r.raise_for_status()
+        return r.json().get("desc", "")
+
+    def update_board_desc(self, desc):
+        """Update the board description."""
+        r = requests.put(
+            f"{self.BASE_URL}/boards/{self.board_id}",
+            params=self._params(desc=desc),
+        )
+        r.raise_for_status()
+        return r.json()
+
     def get_lists(self):
         """Get all lists on the board."""
         r = requests.get(f"{self.BASE_URL}/boards/{self.board_id}/lists", params=self._params())
@@ -312,6 +330,32 @@ class SlackClient:
             return data["messages"][0]
         return None
 
+    def get_preceding_messages(self, channel_id, before_ts, count=3):
+        """Fetch preceding messages in a channel for context.
+
+        Returns list of {user, text} dicts, oldest first.
+        """
+        r = requests.get(
+            f"{self.BASE_URL}/conversations.history",
+            headers=self._headers(),
+            params={"channel": channel_id, "latest": before_ts, "limit": count},
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("ok") and data.get("messages"):
+            msgs = data["messages"]  # newest first from API
+            result = []
+            for m in reversed(msgs):
+                user_id = m.get("user", "")
+                try:
+                    name = self.get_user_name(user_id)
+                except Exception:
+                    name = user_id
+                text = m.get("text", "")
+                result.append({"sender": name, "text": text[:200]})
+            return result
+        return []
+
 
 # --- Cloud Storage ---
 
@@ -364,12 +408,13 @@ PRIORITY_TO_LIST = {
 PRIORITY_ORDER = ["Needs Response", "Action Required", "Worth Reading", "Noted"]
 
 
-def batch_classify_messages(messages_with_context, existing_topics):
+def batch_classify_messages(messages_with_context, existing_topics, user_context=""):
     """Classify all messages in a single Opus call.
 
     Args:
         messages_with_context: list of {idx, text, sender, channel}
         existing_topics: list of {id, name, list_name}
+        user_context: board description with user's context/memory
 
     Returns:
         list of classification dicts, one per message (in same order)
@@ -380,6 +425,12 @@ def batch_classify_messages(messages_with_context, existing_topics):
 
     llm = ChatAnthropic(model=MODEL_CLASSIFY, api_key=api_key, max_tokens=4000)
 
+    context_block = (
+        f"About me (use this to prioritize and group):\n{user_context}\n\n"
+        if user_context.strip()
+        else ""
+    )
+
     topics_list = (
         "\n".join(
             f'- [id:{t["id"]}] {t["name"]} (in: {t["list_name"]})'
@@ -389,13 +440,16 @@ def batch_classify_messages(messages_with_context, existing_topics):
         else "(no existing topics yet)"
     )
 
-    messages_block = "\n".join(
-        f'{m["idx"]}. [#{m["channel"]}] {m["sender"]}: {m["text"][:1500]}'
-        for m in messages_with_context
-    )
+    msg_lines = []
+    for m in messages_with_context:
+        line = f'{m["idx"]}. [#{m["channel"]}] {m["sender"]}: {m["text"][:1500]}'
+        if m.get("preceding_context"):
+            line = f'{m["idx"]}. [#{m["channel"]}] {m["sender"]}: {m["text"][:1500]}\n   Preceding conversation:\n{m["preceding_context"]}'
+        msg_lines.append(line)
+    messages_block = "\n".join(msg_lines)
 
-    prompt = f"""You manage a Trello board that organizes Slack messages by topic.
-Process this batch of {len(messages_with_context)} new messages.
+    prompt = f"""You manage a Trello board that organizes Slack messages by topic for me.
+{context_block}Process this batch of {len(messages_with_context)} new messages.
 
 Existing topics on the board:
 {topics_list}
@@ -405,14 +459,21 @@ Messages to classify:
 
 For EACH message, determine:
 1. Does it belong to an existing topic (give the card id) or is it new?
-2. Priority: needs_response | action_required | worth_reading
+2. Priority: needs_response | action_required | worth_reading | noise
+   - needs_response: someone is waiting on ME specifically
+   - action_required: I need to do something (review, approve, decide) but nobody's blocked
+   - worth_reading: relevant info, no action needed from me
+   - noise: zero informational value — "thanks!", "ok", emoji-only, "got it", etc.
+     HOWEVER: if the preceding context shows the person is agreeing/consenting to
+     something actionable, that is NOT noise (classify based on what they're agreeing to).
 3. Any action items directed at me
 4. A 1-2 sentence summary
 5. A short topic name (3-6 words) if new
 
 IMPORTANT: Multiple messages may belong to the same topic. If two messages in this
 batch are about the same thing, give them the same existing_topic_id or the same
-new topic_name so they get grouped together.
+new topic_name so they get grouped together. Prefer matching to existing topics
+over creating new ones — group aggressively.
 
 Respond with a JSON array, one entry per message in the same order:
 [
@@ -420,7 +481,7 @@ Respond with a JSON array, one entry per message in the same order:
         "msg_idx": 1,
         "existing_topic_id": "card id or null",
         "topic_name": "short topic name",
-        "priority": "needs_response|action_required|worth_reading",
+        "priority": "needs_response|action_required|worth_reading|noise",
         "action_items": [],
         "summary": "brief summary"
     }},
@@ -673,6 +734,59 @@ def append_thread_entry(desc, sender, channel, text_preview, msg_link, message_t
         return desc.rstrip() + f"\n\n**Threads**\n{entry}"
 
 
+# --- Board Context Memory (Haiku) ---
+
+
+def update_board_context(current_context, batch_summary):
+    """Use Haiku to update the board description with new observations.
+
+    Args:
+        current_context: current board description text
+        batch_summary: short summary of what was just processed
+
+    Returns:
+        updated board description string
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return current_context
+
+    llm = ChatAnthropic(model=MODEL_SUMMARIZE, api_key=api_key, max_tokens=800)
+
+    prompt = f"""You maintain a "memory" document about a Slack user — stored as a Trello board description.
+This helps an AI classify and prioritize their messages. The user can read and edit this anytime.
+
+Current memory:
+---
+{current_context or "(empty — first time setup)"}
+---
+
+Here's what just happened in the latest batch of Slack messages:
+{batch_summary}
+
+Update the memory to reflect any new insights. The memory should contain:
+- **Projects**: what the user is currently working on
+- **People**: key collaborators, their manager, their team
+- **Priorities**: what's urgent or important right now
+- **Ignore**: topics/channels the user doesn't care about
+
+Rules:
+- Keep it SHORT — under 15 lines total
+- Only add genuinely new information, don't repeat what's already there
+- Remove stale info if the batch contradicts it
+- Write in second person ("You are working on...", "Your team includes...")
+- If nothing new to add, return the current memory unchanged
+
+Output ONLY the updated memory text, nothing else."""
+
+    try:
+        response = llm.invoke(prompt)
+        return response.content.strip()
+    except Exception as e:
+        logger.warning(f"Failed to update board context: {e}")
+        return current_context
+
+
 # --- Structured Logging ---
 
 
@@ -692,8 +806,15 @@ def log_structured(trace_id, stage, result="success", metadata=None):
 # --- Process Messages (batch) ---
 
 
+SHORT_MESSAGE_THRESHOLD = 20  # chars — fetch context for messages shorter than this
+
+
 def _build_message_context(message_events, slack, batch_trace_id):
-    """Build enriched context for each message event."""
+    """Build enriched context for each message event.
+
+    Short non-thread messages get preceding channel messages fetched
+    so Opus can understand context like "ok!" or "thanks".
+    """
     messages = []
     for i, evt in enumerate(message_events):
         event = evt["event"]
@@ -711,6 +832,19 @@ def _build_message_context(message_events, slack, batch_trace_id):
             sender = user_id
             channel = channel_id
 
+        is_thread = bool(thread_ts and thread_ts != message_ts)
+
+        # Fetch preceding messages for short, non-thread messages
+        preceding_context = ""
+        if len(text.strip()) < SHORT_MESSAGE_THRESHOLD and not is_thread:
+            try:
+                preceding = slack.get_preceding_messages(channel_id, message_ts, count=3)
+                if preceding:
+                    lines = [f"    {m['sender']}: {m['text']}" for m in preceding]
+                    preceding_context = "\n".join(lines)
+            except Exception:
+                pass
+
         messages.append({
             "idx": i + 1,
             "text": text,
@@ -720,7 +854,8 @@ def _build_message_context(message_events, slack, batch_trace_id):
             "user_id": user_id,
             "ts": message_ts,
             "thread_ts": thread_ts,
-            "is_thread_reply": bool(thread_ts and thread_ts != message_ts),
+            "is_thread_reply": is_thread,
+            "preceding_context": preceding_context,
             "trace_id": evt.get("trace_id", batch_trace_id),
         })
     return messages
@@ -759,7 +894,7 @@ def _process_thread_reply(msg, slack, trello, cards, batch_trace_id):
     return True
 
 
-def process_messages(message_events, slack, trello, cards, list_map, batch_trace_id, archived_cards=None):
+def process_messages(message_events, slack, trello, cards, list_map, batch_trace_id, archived_cards=None, user_context=""):
     """Batch-classify messages with one Opus call, then update Trello.
 
     Thread replies skip classification entirely — they're matched to their
@@ -827,7 +962,7 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
     # ONE Opus call for the entire batch
     try:
         all_topics = existing_topics + archived_topics
-        classifications = batch_classify_messages(to_classify, all_topics)
+        classifications = batch_classify_messages(to_classify, all_topics, user_context)
         log_structured(batch_trace_id, "batch_classify_done", "success", {
             "results": len(classifications),
         })
@@ -863,6 +998,12 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
     """Apply a single classification result to Trello."""
     archived_ids = archived_ids or set()
     priority = classification.get("priority", "worth_reading")
+
+    # Drop noise messages entirely — they never reach Trello
+    if priority == "noise":
+        logger.info(f"[{trace_id}] Dropping noise message from {msg['sender']} in #{msg['channel']}: {msg['text'][:60]}")
+        return
+
     target_list_name = PRIORITY_TO_LIST.get(priority, "Worth Reading")
     target_list_id = trello.get_list_id(target_list_name)
 
@@ -886,6 +1027,11 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
         try:
             trello.unarchive_card(existing_topic_id)
             trello.move_card(existing_topic_id, target_list_id)
+            # Uncheck all checklist items
+            for cl in trello.get_checklists(existing_topic_id):
+                for item in cl.get("checkItems", []):
+                    if item["state"] == "complete":
+                        trello.update_checklist_item(existing_topic_id, item["id"], completed=False)
             archived_ids.discard(existing_topic_id)
             logger.info(f"Unarchived card {existing_topic_id} → {target_list_name}")
             log_structured(trace_id, "trello_unarchive", "success", {
@@ -1073,6 +1219,7 @@ def main():
 
     # Fetch board state once
     try:
+        user_context = trello.get_board_desc()
         lists = trello.get_lists()
         list_map = {lst["id"]: lst["name"] for lst in lists}
         cards = trello.get_cards()
@@ -1085,11 +1232,25 @@ def main():
 
     # Process messages (one Opus call for the batch)
     if messages:
-        process_messages(messages, slack, trello, cards, list_map, batch_trace_id, archived_cards)
+        process_messages(
+            messages, slack, trello, cards, list_map,
+            batch_trace_id, archived_cards, user_context,
+        )
 
     # Process reactions (Haiku only, per reaction)
     if reactions:
         process_reactions(reactions, slack, trello, cards, list_map, batch_trace_id)
+
+    # Update board context memory with observations from this batch
+    if messages:
+        try:
+            batch_summary = _build_batch_summary(messages, slack)
+            new_context = update_board_context(user_context, batch_summary)
+            if new_context != user_context:
+                trello.update_board_desc(new_context)
+                log_structured(batch_trace_id, "context_updated")
+        except Exception as e:
+            logger.warning(f"Failed to update board context: {e}")
 
     # Clean up processed events
     delete_pending_events(pending)
@@ -1097,6 +1258,30 @@ def main():
     log_structured(batch_trace_id, "batch_complete", metadata={
         "messages": len(messages), "reactions": len(reactions),
     })
+
+
+def _build_batch_summary(message_events, slack):
+    """Build a short summary of the batch for context updates."""
+    lines = []
+    channels_seen = set()
+    people_seen = set()
+    for evt in message_events[:20]:  # Cap to avoid huge summaries
+        event = evt["event"]
+        user_id = event.get("user", "")
+        channel_id = event.get("channel", "")
+        text = event.get("text", "")[:100]
+        try:
+            name = slack.get_user_name(user_id)
+            channel = slack.get_channel_name(channel_id)
+        except Exception:
+            name = user_id
+            channel = channel_id
+        people_seen.add(name)
+        channels_seen.add(channel)
+        lines.append(f"- {name} in #{channel}: {text}")
+
+    header = f"Channels: {', '.join(channels_seen)}. People: {', '.join(people_seen)}."
+    return header + "\n" + "\n".join(lines)
 
 
 if __name__ == "__main__":

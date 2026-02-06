@@ -56,10 +56,22 @@ Emails with subject starting with `🤖` are skipped (app's own emails).
 | Opus 4.6 (`claude-opus-4-6`) | Batch topic classification + priority | One call per batch (every 2 min) |
 | Haiku (`claude-3-5-haiku-20241022`) | Card description updates, action item revision, reaction interpretation | Per-card, cheap |
 
+### Priorities
+
+| Priority | Meaning | Action |
+|----------|---------|--------|
+| `needs_response` | Someone is waiting on me | Card in "Needs Response" |
+| `action_required` | I need to do something | Card in "Action Required" |
+| `worth_reading` | Relevant info, no action | Card in "Worth Reading" |
+| `noise` | Zero informational value ("thanks!", "ok", emoji-only) | Silently dropped, never reaches Trello |
+
+Short messages (< 20 chars) that are NOT thread replies get 3 preceding channel messages
+fetched as context, so Opus can distinguish noise ("ok!") from meaningful agreement.
+
 ### Batch Processing
 
 1. Slack handler receives events via HTTP webhook, stores them in `gs://gmail-ai-logs/slack-pending/`
-2. Cloud Scheduler triggers batch function every 2 minutes
+2. Cloud Scheduler triggers batch function every 5 minutes
 3. Batch function checks for pending events, triggers slack-processor Cloud Run Job
 4. Processor reads all pending events, classifies in one Opus call, updates Trello, deletes events
 

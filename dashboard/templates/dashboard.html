@@ -68,6 +68,33 @@
         .refresh-btn:hover {
             background: #1565c0;
         }
+        .filter-btns {
+            display: flex;
+            gap: 0;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid #ddd;
+        }
+        .filter-btn {
+            background: white;
+            color: #555;
+            border: none;
+            padding: 8px 14px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            border-right: 1px solid #ddd;
+        }
+        .filter-btn:last-child {
+            border-right: none;
+        }
+        .filter-btn:hover {
+            background: #f5f5f5;
+        }
+        .filter-btn.active {
+            background: #1976d2;
+            color: white;
+        }
 
         /* Trace groups */
         .trace-group {
@@ -286,12 +313,19 @@
                 </div>
                 {% endif %}
             </div>
-            <button class="refresh-btn" onclick="location.reload()">Refresh</button>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <div class="filter-btns">
+                    <button class="filter-btn active" data-filter="all">All</button>
+                    <button class="filter-btn" data-filter="email">Email</button>
+                    <button class="filter-btn" data-filter="slack">Slack</button>
+                </div>
+                <button class="refresh-btn" onclick="location.reload()">Refresh</button>
+            </div>
         </header>
 
         {% if groups %}
             {% for group in groups %}
-            <details class="trace-group" {% if loop.index <= 3 %}open{% endif %}>
+            <details class="trace-group" data-pipeline="{{ group.summary.pipeline }}" {% if loop.index <= 3 %}open{% endif %}>
                 <summary class="trace-summary">
                     <span class="trace-expand">&#9654;</span>
                     <span class="trace-title">{{ group.summary.title }}</span>
@@ -388,6 +422,37 @@
     </div>
 
     <script>
+        // Filter traces by pipeline
+        document.querySelectorAll('.filter-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var filter = this.dataset.filter;
+                document.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
+                this.classList.add('active');
+
+                document.querySelectorAll('.trace-group').forEach(function(group) {
+                    if (filter === 'all' || group.dataset.pipeline === filter) {
+                        group.style.display = '';
+                    } else {
+                        group.style.display = 'none';
+                    }
+                });
+
+                // Update URL without reload
+                var url = new URL(window.location);
+                if (filter === 'all') { url.searchParams.delete('filter'); }
+                else { url.searchParams.set('filter', filter); }
+                history.replaceState(null, '', url);
+            });
+        });
+
+        // Apply filter from URL on load
+        var params = new URLSearchParams(window.location.search);
+        var initialFilter = params.get('filter');
+        if (initialFilter) {
+            var btn = document.querySelector('.filter-btn[data-filter="' + initialFilter + '"]');
+            if (btn) btn.click();
+        }
+
         // Auto-refresh every 30 seconds
         setTimeout(function() {
             location.reload();

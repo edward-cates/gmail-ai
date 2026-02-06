@@ -242,7 +242,7 @@ deploy-slack-batch-trigger:
 		--set-env-vars="GMAIL_AI_PROJECT_ID=$(PROJECT_ID),GMAIL_AI_LOCATION=$(REGION),GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,SLACK_PROCESSOR_JOB_NAME=slack-processor"
 
 setup-slack-scheduler:
-	@echo "Setting up Slack batch scheduler (every 2 minutes)..."
+	@echo "Setting up Slack batch scheduler (every 5 minutes)..."
 	@FUNCTION_URL=$$(gcloud functions describe slack-batch-trigger --gen2 --region=$(REGION) --project=$(PROJECT_ID) --format="value(serviceConfig.uri)" 2>/dev/null); \
 	if [ -z "$$FUNCTION_URL" ]; then \
 		echo "Error: deploy-slack-batch-trigger first"; exit 1; \
@@ -250,9 +250,9 @@ setup-slack-scheduler:
 	JOB_EXISTS=$$(gcloud scheduler jobs describe slack-batch-processor --location=$(REGION) --project=$(PROJECT_ID) --format="value(name)" 2>/dev/null | wc -l); \
 	if [ "$$JOB_EXISTS" -eq 0 ]; then \
 		gcloud scheduler jobs create http slack-batch-processor \
-			--location=$(REGION) --schedule="*/2 * * * *" --uri="$$FUNCTION_URL" \
+			--location=$(REGION) --schedule="*/5 * * * *" --uri="$$FUNCTION_URL" \
 			--http-method=GET --time-zone="America/Los_Angeles" --project=$(PROJECT_ID); \
-		echo "✓ Slack batch scheduler created (every 2 min)"; \
+		echo "✓ Slack batch scheduler created (every 5 min)"; \
 	else \
 		echo "✓ Slack batch scheduler already exists"; \
 	fi

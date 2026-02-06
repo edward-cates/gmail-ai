@@ -475,3 +475,101 @@ class TestThreadHandling:
         result = processor._process_thread_reply(msg, mock_slack, mock_trello, cards, "batch-t")
         assert result is False
         mock_trello.add_comment.assert_not_called()
+
+
+class TestNoiseClassification:
+    """Tests for noise message handling."""
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    @patch("main.update_description_summary")
+    def test_noise_message_skips_trello(self, mock_summary):
+        """Messages classified as noise should not create cards or comments."""
+        mock_trello = MagicMock()
+        mock_slack = MagicMock()
+
+        classification = {
+            "existing_topic_id": None,
+            "topic_name": "Thanks",
+            "priority": "noise",
+            "action_items": [],
+        }
+        msg = {"sender": "Alice", "channel": "general", "text": "thanks!", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
+
+        processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, [], {}, {})
+
+        mock_trello.create_card.assert_not_called()
+        mock_trello.add_comment.assert_not_called()
+        mock_summary.assert_not_called()
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    @patch("main.update_description_summary")
+    def test_noise_with_existing_topic_still_skips(self, mock_summary):
+        """Even if noise is linked to an existing topic, it should be dropped."""
+        mock_trello = MagicMock()
+        mock_slack = MagicMock()
+
+        classification = {
+            "existing_topic_id": "card1",
+            "topic_name": "Sprint",
+            "priority": "noise",
+            "action_items": [],
+        }
+        msg = {"sender": "Bob", "channel": "general", "text": "ok!", "channel_id": "C1", "user_id": "U2", "ts": "222.333"}
+
+        processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, [{"id": "card1", "name": "Sprint", "idList": "l1", "desc": ""}], {}, {})
+
+        mock_trello.add_comment.assert_not_called()
+        mock_summary.assert_not_called()
+
+
+class TestShortMessageContext:
+    """Tests for preceding message context fetching."""
+
+    def test_short_message_gets_context(self):
+        """Short non-thread messages should have preceding_context populated."""
+        mock_slack = MagicMock()
+        mock_slack.get_user_name.return_value = "Alice"
+        mock_slack.get_channel_name.return_value = "general"
+        mock_slack.resolve_mentions.side_effect = lambda t: t
+        mock_slack.get_preceding_messages.return_value = [
+            {"sender": "Bob", "text": "Can you approve the deploy?"},
+            {"sender": "Carol", "text": "I'll handle staging"},
+        ]
+
+        events = [{"event": {"user": "U1", "channel": "C1", "text": "ok!", "ts": "111.222", "thread_ts": ""}, "trace_id": "t1"}]
+
+        result = processor._build_message_context(events, mock_slack, "batch-t")
+
+        assert len(result) == 1
+        assert result[0]["preceding_context"] != ""
+        assert "Bob" in result[0]["preceding_context"]
+        assert "Can you approve the deploy?" in result[0]["preceding_context"]
+        mock_slack.get_preceding_messages.assert_called_once_with("C1", "111.222", count=3)
+
+    def test_long_message_no_context_fetch(self):
+        """Messages >= 20 chars should NOT fetch preceding context."""
+        mock_slack = MagicMock()
+        mock_slack.get_user_name.return_value = "Alice"
+        mock_slack.get_channel_name.return_value = "general"
+        mock_slack.resolve_mentions.side_effect = lambda t: t
+
+        events = [{"event": {"user": "U1", "channel": "C1", "text": "This is a normal length message", "ts": "111.222", "thread_ts": ""}, "trace_id": "t1"}]
+
+        result = processor._build_message_context(events, mock_slack, "batch-t")
+
+        assert result[0]["preceding_context"] == ""
+        mock_slack.get_preceding_messages.assert_not_called()
+
+    def test_thread_reply_no_context_fetch(self):
+        """Thread replies should NOT fetch preceding context (they already have thread context)."""
+        mock_slack = MagicMock()
+        mock_slack.get_user_name.return_value = "Alice"
+        mock_slack.get_channel_name.return_value = "general"
+        mock_slack.resolve_mentions.side_effect = lambda t: t
+
+        events = [{"event": {"user": "U1", "channel": "C1", "text": "ok!", "ts": "222.333", "thread_ts": "111.222"}, "trace_id": "t1"}]
+
+        result = processor._build_message_context(events, mock_slack, "batch-t")
+
+        assert result[0]["preceding_context"] == ""
+        mock_slack.get_preceding_messages.assert_not_called()
