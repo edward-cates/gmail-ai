@@ -405,7 +405,7 @@ def update_description_summary(current_desc, channel_name, new_message, sender_n
     llm = ChatAnthropic(model=MODEL_SUMMARIZE, api_key=api_key, max_tokens=600)
 
     prompt = f"""You maintain a Trello card description that serves as a living brief for a Slack topic.
-The description has two sections: **Summary** and **Reactions**.
+The description has three sections: **Summary**, **Reactions**, and **Threads**.
 
 Current card description:
 ---
@@ -417,16 +417,19 @@ A new message just arrived in #{channel_name}:
 - Text: {new_message[:2000]}
 
 Rewrite the **Summary** section to incorporate this new message. Keep it 1-3 sentences — dense,
-direct, no fluff. Preserve the **Reactions** section exactly as-is (or include an empty placeholder
-if there isn't one yet).
+direct, no fluff. Preserve the **Reactions** and **Threads** sections EXACTLY as-is (or include
+empty placeholders if they don't exist yet).
 
-Output the full card description (both sections):
+Output the full card description (all three sections):
 
 **Summary**
 (your updated summary here)
 
 **Reactions**
-(preserve existing or write "No reactions yet.")"""
+(preserve existing or write "No reactions yet.")
+
+**Threads**
+(preserve existing EXACTLY — do NOT modify this section)"""
 
     response = llm.invoke(prompt)
     return response.content.strip()
@@ -441,7 +444,7 @@ def update_description_reactions(current_desc, reactor_name, reaction_emoji, ori
     llm = ChatAnthropic(model=MODEL_SUMMARIZE, api_key=api_key, max_tokens=600)
 
     prompt = f"""You maintain a Trello card description that serves as a living brief for a Slack topic.
-The description has two sections: **Summary** and **Reactions**.
+The description has three sections: **Summary**, **Reactions**, and **Threads**.
 
 Current card description:
 ---
@@ -455,18 +458,50 @@ A new reaction just happened:
 Update the **Reactions** section to incorporate this new reaction. The Reactions section should
 read as a brief, natural-language insight about how people are responding to what I'm saying —
 what's landing well and what isn't. Don't just list emojis; interpret the sentiment.
-Keep the **Summary** section exactly as-is.
+Keep the **Summary** and **Threads** sections EXACTLY as-is.
 
-Output the full card description (both sections):
+Output the full card description (all three sections):
 
 **Summary**
 (preserve existing summary exactly)
 
 **Reactions**
-(your updated reactions insight here)"""
+(your updated reactions insight here)
+
+**Threads**
+(preserve existing EXACTLY — do NOT modify this section)"""
 
     response = llm.invoke(prompt)
     return response.content.strip()
+
+
+# --- Thread Tracking ---
+
+
+def find_card_by_thread_ts(cards, thread_ts):
+    """Find a card whose description contains a thread_ts marker."""
+    marker = f"`ts:{thread_ts}`"
+    for card in cards:
+        if marker in (card.get("desc") or ""):
+            return card
+    return None
+
+
+def append_thread_entry(desc, sender, channel, text_preview, msg_link, message_ts):
+    """Append a thread entry to the **Threads** section of a card description.
+
+    Each entry looks like:
+    - [Sender in #channel: "preview..."](msg_link) `ts:123.456`
+    """
+    preview = text_preview[:60].replace("\n", " ")
+    entry = f'- [{sender} in #{channel}: "{preview}"]({msg_link}) `ts:{message_ts}`'
+
+    if "**Threads**" in desc:
+        # Append to existing section
+        return desc.rstrip() + "\n" + entry
+    else:
+        # Add new section
+        return desc.rstrip() + f"\n\n**Threads**\n{entry}"
 
 
 # --- Structured Logging ---
@@ -488,16 +523,16 @@ def log_structured(trace_id, stage, result="success", metadata=None):
 # --- Process Messages (batch) ---
 
 
-def process_messages(message_events, slack, trello, cards, list_map, batch_trace_id):
-    """Batch-classify messages with one Opus call, then update Trello."""
-    # Build context for each message
-    messages_with_context = []
+def _build_message_context(message_events, slack, batch_trace_id):
+    """Build enriched context for each message event."""
+    messages = []
     for i, evt in enumerate(message_events):
         event = evt["event"]
         user_id = event.get("user", "")
         channel_id = event.get("channel", "")
         text = event.get("text", "")
         message_ts = event.get("ts", "")
+        thread_ts = event.get("thread_ts", "")
 
         try:
             sender = slack.get_user_name(user_id)
@@ -507,7 +542,7 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
             sender = user_id
             channel = channel_id
 
-        messages_with_context.append({
+        messages.append({
             "idx": i + 1,
             "text": text,
             "sender": sender,
@@ -515,8 +550,87 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
             "channel_id": channel_id,
             "user_id": user_id,
             "ts": message_ts,
+            "thread_ts": thread_ts,
+            "is_thread_reply": bool(thread_ts and thread_ts != message_ts),
             "trace_id": evt.get("trace_id", batch_trace_id),
         })
+    return messages
+
+
+def _process_thread_reply(msg, slack, trello, cards, batch_trace_id):
+    """Handle a thread reply — find parent card, add comment, skip Opus."""
+    trace_id = msg["trace_id"]
+    thread_ts = msg["thread_ts"]
+
+    card = find_card_by_thread_ts(cards, thread_ts)
+    if not card:
+        return False  # parent not found, fall back to classification
+
+    channel_link = slack.channel_link(msg["channel_id"])
+    msg_link = slack.message_link(msg["channel_id"], msg["ts"]) if msg.get("ts") else ""
+
+    comment = f'**{msg["sender"]}** in [#{msg["channel"]}]({channel_link}) (thread reply):\n{msg["text"]}'
+    if msg_link:
+        comment += f'\n\n[View message]({msg_link})'
+
+    trello.add_comment(card["id"], comment)
+
+    # Add this reply's ts to threads section too
+    current_desc = card.get("desc", "")
+    new_desc = append_thread_entry(
+        current_desc, msg["sender"], msg["channel"],
+        msg["text"], msg_link, msg["ts"],
+    )
+    trello.update_card_desc(card["id"], new_desc)
+    card["desc"] = new_desc
+
+    log_structured(trace_id, "thread_reply", "success", {
+        "card_id": card["id"], "parent_ts": thread_ts,
+    })
+    return True
+
+
+def process_messages(message_events, slack, trello, cards, list_map, batch_trace_id):
+    """Batch-classify messages with one Opus call, then update Trello.
+
+    Thread replies skip classification entirely — they're matched to their
+    parent card via thread_ts stored in the card description.
+    """
+    all_messages = _build_message_context(message_events, slack, batch_trace_id)
+
+    # Process thread replies first (no Opus needed)
+    top_level = []
+    thread_replies_handled = 0
+    thread_replies_unmatched = []
+
+    for msg in all_messages:
+        if msg["is_thread_reply"]:
+            try:
+                if _process_thread_reply(msg, slack, trello, cards, batch_trace_id):
+                    thread_replies_handled += 1
+                    continue
+            except Exception as e:
+                logger.error(f"Failed thread reply for ts={msg['ts']}: {e}")
+            # Parent not found — include in classification batch
+            thread_replies_unmatched.append(msg)
+        else:
+            top_level.append(msg)
+
+    # Combine top-level + unmatched thread replies for classification
+    to_classify = top_level + thread_replies_unmatched
+
+    if thread_replies_handled:
+        log_structured(batch_trace_id, "thread_replies", metadata={
+            "handled": thread_replies_handled,
+            "unmatched": len(thread_replies_unmatched),
+        })
+
+    if not to_classify:
+        return
+
+    # Re-index for the Opus prompt
+    for i, msg in enumerate(to_classify):
+        msg["idx"] = i + 1
 
     # Get existing topics
     existing_topics = [
@@ -526,13 +640,13 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
     ]
 
     log_structured(batch_trace_id, "batch_classify_start", metadata={
-        "message_count": len(messages_with_context),
+        "message_count": len(to_classify),
         "existing_topics": len(existing_topics),
     })
 
     # ONE Opus call for the entire batch
     try:
-        classifications = batch_classify_messages(messages_with_context, existing_topics)
+        classifications = batch_classify_messages(to_classify, existing_topics)
         log_structured(batch_trace_id, "batch_classify_done", "success", {
             "results": len(classifications),
         })
@@ -542,15 +656,14 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
         return
 
     # Process each classified message
-    # Track new cards created in this batch so later messages can reference them
     new_cards_by_topic = {}  # topic_name -> card_id
 
     for classification in classifications:
         msg_idx = classification.get("msg_idx", 0) - 1  # back to 0-indexed
-        if msg_idx < 0 or msg_idx >= len(messages_with_context):
+        if msg_idx < 0 or msg_idx >= len(to_classify):
             continue
 
-        msg = messages_with_context[msg_idx]
+        msg = to_classify[msg_idx]
         trace_id = msg["trace_id"]
 
         try:
@@ -601,7 +714,15 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
         # Update description via Haiku
         current_desc = current_card.get("desc", "") if current_card else ""
         new_desc = update_description_summary(current_desc, msg["channel"], msg["text"], msg["sender"])
+
+        # Add thread tracking entry
+        new_desc = append_thread_entry(
+            new_desc, msg["sender"], msg["channel"],
+            msg["text"], msg_link, msg["ts"],
+        )
         trello.update_card_desc(card_id, new_desc)
+        if current_card:
+            current_card["desc"] = new_desc
 
         log_structured(trace_id, "trello_update", "success", {
             "card_id": card_id, "topic": topic_name, "priority": priority,
@@ -609,6 +730,12 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
     else:
         # --- Create new card ---
         initial_desc = update_description_summary("", msg["channel"], msg["text"], msg["sender"])
+
+        # Add thread tracking entry
+        initial_desc = append_thread_entry(
+            initial_desc, msg["sender"], msg["channel"],
+            msg["text"], msg_link, msg["ts"],
+        )
         card = trello.create_card(target_list_id, topic_name, desc=initial_desc)
         card_id = card["id"]
         trello.add_comment(card_id, comment)

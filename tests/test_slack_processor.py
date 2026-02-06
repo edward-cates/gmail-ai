@@ -344,3 +344,75 @@ class TestPriorityEscalation:
 
         processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, cards, list_map, {})
         mock_trello.move_card.assert_not_called()
+
+
+class TestThreadHandling:
+    """Tests for thread reply detection and force-grouping."""
+
+    def test_find_card_by_thread_ts(self):
+        """Should find a card whose description contains the thread_ts marker."""
+        cards = [
+            {"id": "card1", "desc": "**Summary**\nStuff\n\n**Threads**\n- [msg](link) `ts:111.222`"},
+            {"id": "card2", "desc": "**Summary**\nOther stuff"},
+        ]
+        assert processor.find_card_by_thread_ts(cards, "111.222")["id"] == "card1"
+        assert processor.find_card_by_thread_ts(cards, "999.999") is None
+
+    def test_append_thread_entry_new_section(self):
+        """Should add a Threads section if none exists."""
+        desc = "**Summary**\nTest\n\n**Reactions**\nNo reactions yet."
+        result = processor.append_thread_entry(desc, "Alice", "general", "hello world", "https://link", "111.222")
+        assert "**Threads**" in result
+        assert '`ts:111.222`' in result
+        assert "Alice in #general" in result
+
+    def test_append_thread_entry_existing_section(self):
+        """Should append to existing Threads section."""
+        desc = "**Summary**\nTest\n\n**Threads**\n- [First](link1) `ts:111.222`"
+        result = processor.append_thread_entry(desc, "Bob", "backend", "new msg", "https://link2", "333.444")
+        assert '`ts:111.222`' in result
+        assert '`ts:333.444`' in result
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    def test_thread_reply_skips_classification(self):
+        """Thread replies with a matching parent card should skip Opus."""
+        mock_slack = MagicMock()
+        mock_slack.channel_link.return_value = "https://slack.com/archives/C1"
+        mock_slack.message_link.return_value = "https://slack.com/archives/C1/p333"
+
+        mock_trello = MagicMock()
+        cards = [{
+            "id": "card1", "name": "Topic", "idList": "list1",
+            "desc": "**Summary**\ntest\n\n**Threads**\n- [msg](link) `ts:111.222`",
+        }]
+
+        msg = {
+            "sender": "Bob", "channel": "general", "text": "agreed",
+            "channel_id": "C1", "user_id": "U2", "ts": "333.444",
+            "thread_ts": "111.222", "is_thread_reply": True,
+            "trace_id": "t1",
+        }
+
+        result = processor._process_thread_reply(msg, mock_slack, mock_trello, cards, "batch-t")
+        assert result is True
+        mock_trello.add_comment.assert_called_once()
+        assert "thread reply" in mock_trello.add_comment.call_args[0][1]
+        mock_trello.update_card_desc.assert_called_once()
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    def test_thread_reply_no_parent_falls_back(self):
+        """Thread replies with no matching parent should fall back to classification."""
+        mock_slack = MagicMock()
+        mock_trello = MagicMock()
+        cards = [{"id": "card1", "desc": "**Summary**\nno threads here"}]
+
+        msg = {
+            "sender": "Bob", "channel": "general", "text": "agreed",
+            "channel_id": "C1", "user_id": "U2", "ts": "333.444",
+            "thread_ts": "999.999", "is_thread_reply": True,
+            "trace_id": "t1",
+        }
+
+        result = processor._process_thread_reply(msg, mock_slack, mock_trello, cards, "batch-t")
+        assert result is False
+        mock_trello.add_comment.assert_not_called()
