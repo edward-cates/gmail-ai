@@ -328,7 +328,7 @@
             <details class="trace-group" data-pipeline="{{ group.summary.pipeline }}">
                 <summary class="trace-summary">
                     <span class="trace-expand">&#9654;</span>
-                    <span class="trace-title">{{ group.summary.title }}</span>
+                    <span class="trace-title">{% if group.summary.pipeline == 'slack' %}&#x1F4AC;{% elif group.summary.pipeline == 'email' %}&#x2709;&#xFE0F;{% endif %} {{ group.summary.title }}</span>
                     <span class="trace-badges">
                         <span class="badge badge-{{ group.summary.pipeline }}">{{ group.summary.pipeline }}</span>
                         {% if group.summary.category %}
