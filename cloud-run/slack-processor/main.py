@@ -1221,10 +1221,10 @@ def process_reactions(reaction_events, slack, trello, cards, list_map, batch_tra
         try:
             msg = slack.get_message(channel_id, message_ts)
             if not msg:
-                log_structured(batch_trace_id, "skip", metadata={"reason": "message_not_found"})
+                log_structured(batch_trace_id, "skip", metadata={"reason": "reaction: message_not_found"})
                 continue
             if msg.get("user") != my_user_id:
-                log_structured(batch_trace_id, "skip", metadata={"reason": "not_my_message"})
+                log_structured(batch_trace_id, "skip", metadata={"reason": "reaction: not_my_message"})
                 continue
             original_text = msg.get("text", "")[:500]
         except Exception as e:
@@ -1247,7 +1247,7 @@ def process_reactions(reaction_events, slack, trello, cards, list_map, batch_tra
         ]
 
         if not matching_cards:
-            log_structured(batch_trace_id, "skip", metadata={"reason": "no_matching_card"})
+            log_structured(batch_trace_id, "skip", metadata={"reason": "reaction: no_matching_card"})
             continue
 
         card = matching_cards[0]
