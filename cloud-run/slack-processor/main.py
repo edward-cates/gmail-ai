@@ -279,7 +279,10 @@ class SlackClient:
         return name
 
     def get_channel_name(self, channel_id):
-        """Get channel name (cached)."""
+        """Get channel name (cached).
+
+        Handles regular channels, DMs (is_im), and group DMs (is_mpim).
+        """
         if channel_id in self._channel_cache:
             return self._channel_cache[channel_id]
         r = requests.get(
@@ -291,7 +294,21 @@ class SlackClient:
         data = r.json()
         name = channel_id
         if data.get("ok"):
-            name = data["channel"].get("name", channel_id)
+            ch = data["channel"]
+            if ch.get("is_im"):
+                # DM channel — resolve the other user's name
+                other_user = ch.get("user", "")
+                if other_user:
+                    try:
+                        name = f"DM with {self.get_user_name(other_user)}"
+                    except Exception:
+                        name = "DM"
+                else:
+                    name = "DM"
+            elif ch.get("is_mpim"):
+                name = ch.get("purpose", {}).get("value") or ch.get("name", channel_id)
+            else:
+                name = ch.get("name", channel_id)
         self._channel_cache[channel_id] = name
         return name
 

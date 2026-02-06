@@ -201,7 +201,7 @@ def classify_email(subject: str, sender: str, body: str) -> dict:
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set")
 
-    llm = ChatAnthropic(model="claude-sonnet-4-20250514", api_key=api_key, max_tokens=500)
+    llm = ChatAnthropic(model="claude-opus-4-6", api_key=api_key, max_tokens=500)
 
     prompt = f"""Classify this email by its PRIMARY PURPOSE into one of these categories:
 
@@ -263,7 +263,7 @@ def summarize_newsletter(subject: str, sender: str, body: str) -> str:
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set")
 
-    llm = ChatAnthropic(model="claude-sonnet-4-20250514", api_key=api_key, max_tokens=1000)
+    llm = ChatAnthropic(model="claude-opus-4-6", api_key=api_key, max_tokens=1000)
 
     prompt = f"""You're summarizing a newsletter for someone who doesn't have time to read it.
 
