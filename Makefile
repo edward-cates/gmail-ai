@@ -162,7 +162,6 @@ deploy-watch-renewal:
 		--source=. \
 		--entry-point=renew_watch_http \
 		--trigger-http \
-		--allow-unauthenticated \
 		--timeout=60s \
 		--memory=256Mi \
 		--project=$(PROJECT_ID) \
@@ -237,7 +236,6 @@ deploy-slack-batch-trigger:
 		--source=. \
 		--entry-point=trigger_slack_batch_http \
 		--trigger-http \
-		--allow-unauthenticated \
 		--timeout=60s \
 		--memory=256Mi \
 		--project=$(PROJECT_ID) \
