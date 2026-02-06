@@ -1,4 +1,4 @@
-.PHONY: help run-dashboard check-logs check-job-logs check-function-logs deploy-function deploy-function-force deploy-watch-renewal deploy-email-processor deploy-unsubscribe-service deploy-slack-processor deploy-slack-function deploy-slack-batch-trigger test-email-processor test-unsubscribe-service test-slack-processor test-functions test-dashboard test-unit test setup-scheduler setup-slack-scheduler watch-build lint validate
+.PHONY: help run-dashboard check-logs check-job-logs check-function-logs deploy-function deploy-function-force deploy-watch-renewal deploy-email-processor deploy-unsubscribe-service deploy-slack-processor deploy-slack-function deploy-slack-batch-trigger test-email-processor test-unsubscribe-service test-slack-processor test-functions test-dashboard test-unit test setup-scheduler setup-slack-scheduler watch-build lint validate delete-trello-cards
 
 PROJECT_ID = neat-simplicity-486023-a4
 PROJECT_NUMBER = 543519381062
@@ -303,6 +303,31 @@ watch-build:
 	if [ -z "$$BUILD_ID" ]; then echo "No ongoing builds"; else \
 		gcloud builds log $$BUILD_ID --stream --project=$(PROJECT_ID); \
 	fi
+
+# ============================================================================
+# DEPLOY ALL
+# ============================================================================
+
+# ============================================================================
+# TRELLO MANAGEMENT
+# ============================================================================
+
+delete-trello-cards:
+	@echo "⚠️  This will DELETE ALL cards from your Trello board."
+	@echo "Type 'delete' to confirm:"
+	@read confirm && \
+	if [ "$$confirm" != "delete" ]; then \
+		echo "Aborted."; exit 1; \
+	fi; \
+	export $$(cat .env | grep -v '^#' | xargs) && \
+	uv run python -c "\
+	import os, requests; \
+	key, token, board = os.environ['TRELLO_API_KEY'], os.environ['TRELLO_TOKEN'], os.environ.get('TRELLO_BOARD_ID', 'CGZ3WUaG'); \
+	cards = requests.get(f'https://api.trello.com/1/boards/{board}/cards', params={'key': key, 'token': token, 'fields': 'id,name'}).json(); \
+	print(f'Found {len(cards)} cards to delete.'); \
+	[print(f'  Deleted: {c[\"name\"]}') or requests.delete(f'https://api.trello.com/1/cards/{c[\"id\"]}', params={'key': key, 'token': token}).raise_for_status() for c in cards]; \
+	print(f'✓ Deleted {len(cards)} cards.') if cards else print('No cards to delete.'); \
+	"
 
 # ============================================================================
 # DEPLOY ALL

@@ -449,7 +449,6 @@ class TestThreadHandling:
             "sender": "Bob", "channel": "general", "text": "agreed",
             "channel_id": "C1", "user_id": "U2", "ts": "333.444",
             "thread_ts": "111.222", "is_thread_reply": True,
-            "trace_id": "t1",
         }
 
         result = processor._process_thread_reply(msg, mock_slack, mock_trello, cards, "batch-t")
@@ -469,7 +468,6 @@ class TestThreadHandling:
             "sender": "Bob", "channel": "general", "text": "agreed",
             "channel_id": "C1", "user_id": "U2", "ts": "333.444",
             "thread_ts": "999.999", "is_thread_reply": True,
-            "trace_id": "t1",
         }
 
         result = processor._process_thread_reply(msg, mock_slack, mock_trello, cards, "batch-t")

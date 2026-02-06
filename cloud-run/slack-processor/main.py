@@ -899,14 +899,12 @@ def _build_message_context(message_events, slack, batch_trace_id):
             "thread_ts": thread_ts,
             "is_thread_reply": is_thread,
             "preceding_context": preceding_context,
-            "trace_id": evt.get("trace_id", batch_trace_id),
         })
     return messages
 
 
 def _process_thread_reply(msg, slack, trello, cards, batch_trace_id):
     """Handle a thread reply — find parent card, add comment, skip Opus."""
-    trace_id = msg["trace_id"]
     thread_ts = msg["thread_ts"]
 
     card = find_card_by_thread_ts(cards, thread_ts)
@@ -931,7 +929,7 @@ def _process_thread_reply(msg, slack, trello, cards, batch_trace_id):
     trello.update_card_desc(card["id"], new_desc)
     card["desc"] = new_desc
 
-    log_structured(trace_id, "thread_reply", "success", {
+    log_structured(batch_trace_id, "thread_reply", "success", {
         "card_id": card["id"], "parent_ts": thread_ts,
     })
     return True
@@ -1011,16 +1009,15 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
             continue
 
         msg = to_classify[msg_idx]
-        trace_id = msg["trace_id"]
 
         try:
             _apply_classification(
-                classification, msg, trace_id,
+                classification, msg, batch_trace_id,
                 trello, slack, cards, list_map, new_cards_by_topic,
             )
         except Exception as e:
             logger.error(f"Failed to process message {msg_idx}: {e}")
-            log_structured(trace_id, "trello_action", "failure", {"error": str(e)})
+            log_structured(batch_trace_id, "trello_action", "failure", {"error": str(e)})
 
 
 def _apply_classification(classification, msg, trace_id, trello, slack, cards, list_map, new_cards_by_topic):
@@ -1152,7 +1149,6 @@ def process_reactions(reaction_events, slack, trello, cards, list_map, batch_tra
 
     for evt in reaction_events:
         event = evt["event"]
-        trace_id = evt.get("trace_id", batch_trace_id)
         user_id = event.get("user", "")
         reaction = event.get("reaction", "")
         item = event.get("item", {})
@@ -1163,10 +1159,10 @@ def process_reactions(reaction_events, slack, trello, cards, list_map, batch_tra
         try:
             msg = slack.get_message(channel_id, message_ts)
             if not msg:
-                log_structured(trace_id, "skip", metadata={"reason": "message_not_found"})
+                log_structured(batch_trace_id, "skip", metadata={"reason": "message_not_found"})
                 continue
             if msg.get("user") != my_user_id:
-                log_structured(trace_id, "skip", metadata={"reason": "not_my_message"})
+                log_structured(batch_trace_id, "skip", metadata={"reason": "not_my_message"})
                 continue
             original_text = msg.get("text", "")[:500]
         except Exception as e:
@@ -1189,7 +1185,7 @@ def process_reactions(reaction_events, slack, trello, cards, list_map, batch_tra
         ]
 
         if not matching_cards:
-            log_structured(trace_id, "skip", metadata={"reason": "no_matching_card"})
+            log_structured(batch_trace_id, "skip", metadata={"reason": "no_matching_card"})
             continue
 
         card = matching_cards[0]
@@ -1198,12 +1194,12 @@ def process_reactions(reaction_events, slack, trello, cards, list_map, batch_tra
         try:
             new_desc = update_description_reactions(current_desc, reactor_name, reaction, original_text)
             trello.update_card_desc(card["id"], new_desc)
-            log_structured(trace_id, "trello_update", "success", {
+            log_structured(batch_trace_id, "trello_update", "success", {
                 "card_id": card["id"], "reaction": reaction,
             })
         except Exception as e:
             logger.error(f"Failed to update reaction on card: {e}")
-            log_structured(trace_id, "trello_action", "failure", {"error": str(e)})
+            log_structured(batch_trace_id, "trello_action", "failure", {"error": str(e)})
 
 
 # --- Main ---
@@ -1223,13 +1219,20 @@ def main():
         return
 
     logger.info(f"Found {len(pending)} pending events")
-    log_structured(batch_trace_id, "batch_start", metadata={"total_events": len(pending)})
+
+    # Clear queue immediately to prevent reprocessing on next batch
+    delete_pending_events(pending)
+    log_structured(batch_trace_id, "queue_cleared", metadata={"count": len(pending)})
 
     # Separate messages from reactions
     messages = [e for e in pending if e["event"].get("type") != "reaction_added"]
     reactions = [e for e in pending if e["event"].get("type") == "reaction_added"]
 
-    logger.info(f"Messages: {len(messages)}, Reactions: {len(reactions)}")
+    log_structured(batch_trace_id, "batch_start", metadata={
+        "total_events": len(pending),
+        "messages": len(messages),
+        "reactions": len(reactions),
+    })
 
     # Initialize clients
     slack = SlackClient()
@@ -1269,8 +1272,6 @@ def main():
         except Exception as e:
             logger.warning(f"Failed to update board context: {e}")
 
-    # Clean up processed events
-    delete_pending_events(pending)
     logger.info(f"Batch complete. Processed {len(pending)} events.")
     log_structured(batch_trace_id, "batch_complete", metadata={
         "messages": len(messages), "reactions": len(reactions),
