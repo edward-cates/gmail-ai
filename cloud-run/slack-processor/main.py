@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -1037,6 +1038,7 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
     ]
 
     # Fetch recent history for channels in this batch
+    t0 = time.time()
     channel_ids_in_batch = {m["channel_id"]: m["channel"] for m in to_classify}
     channel_context = {}
     for channel_id, channel_name in channel_ids_in_batch.items():
@@ -1046,21 +1048,26 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
                 channel_context[channel_name] = history
         except Exception as e:
             logger.warning(f"Failed to fetch history for #{channel_name}: {e}")
+    context_secs = round(time.time() - t0, 1)
 
     log_structured(batch_trace_id, "batch_classify_start", metadata={
         "message_count": len(to_classify),
         "existing_topics": len(existing_topics),
         "channels_with_context": len(channel_context),
+        "context_fetch_secs": context_secs,
     })
 
     # ONE Opus call for the entire batch
+    t0 = time.time()
     try:
         classifications = batch_classify_messages(
             to_classify, existing_topics, user_context,
             channel_context=channel_context,
         )
+        opus_secs = round(time.time() - t0, 1)
         log_structured(batch_trace_id, "batch_classify_done", "success", {
             "results": len(classifications),
+            "opus_secs": opus_secs,
         })
     except Exception as e:
         logger.error(f"Batch classification failed: {e}")
@@ -1285,6 +1292,7 @@ def main():
         log_structured(batch_trace_id, "batch_empty")
         return
 
+    batch_start_time = time.time()
     logger.info(f"Found {len(pending)} pending events")
 
     # Clear queue immediately to prevent reprocessing on next batch
@@ -1339,9 +1347,11 @@ def main():
         except Exception as e:
             logger.warning(f"Failed to update board context: {e}")
 
-    logger.info(f"Batch complete. Processed {len(pending)} events.")
+    total_secs = round(time.time() - batch_start_time, 1)
+    logger.info(f"Batch complete. Processed {len(pending)} events in {total_secs}s.")
     log_structured(batch_trace_id, "batch_complete", metadata={
         "messages": len(messages), "reactions": len(reactions),
+        "total_secs": total_secs,
     })
 
 

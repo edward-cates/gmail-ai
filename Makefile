@@ -197,10 +197,10 @@ deploy-slack-processor:
 	gcloud run jobs deploy slack-processor \
 		--source=cloud-run/slack-processor \
 		--region=$(REGION) \
-		--task-timeout=120s \
+		--task-timeout=300s \
 		--memory=512Mi \
 		--cpu=1 \
-		--max-retries=1 \
+		--max-retries=0 \
 		--service-account="$$SERVICE_ACCOUNT" \
 		--set-env-vars="TRELLO_BOARD_ID=CGZ3WUaG,GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=$(PROJECT_ID)" \
 		--set-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest,SLACK_BOT_TOKEN=slack-bot-token:latest,TRELLO_API_KEY=trello-api-key:latest,TRELLO_TOKEN=trello-token:latest" \

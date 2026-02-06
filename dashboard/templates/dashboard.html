@@ -364,9 +364,11 @@
                                 {% elif entry.metadata and entry.metadata.total_events is defined %}
                                     {{ entry.metadata.total_events }} events pending
                                 {% elif entry.metadata and entry.metadata.message_count is defined %}
-                                    {{ entry.metadata.message_count }} messages, {{ entry.metadata.existing_topics }} topics
+                                    {{ entry.metadata.message_count }} messages, {{ entry.metadata.existing_topics }} topics{% if entry.metadata.context_fetch_secs is defined %} (context: {{ entry.metadata.context_fetch_secs }}s){% endif %}
                                 {% elif entry.metadata and entry.metadata.messages is defined %}
-                                    {{ entry.metadata.messages }} messages, {{ entry.metadata.reactions }} reactions
+                                    {{ entry.metadata.messages }} messages, {{ entry.metadata.reactions }} reactions{% if entry.metadata.total_secs is defined %} ({{ entry.metadata.total_secs }}s){% endif %}
+                                {% elif entry.metadata and entry.metadata.results is defined %}
+                                    {{ entry.metadata.results }} classified{% if entry.metadata.opus_secs is defined %} (Opus: {{ entry.metadata.opus_secs }}s){% endif %}
                                 {% elif entry.metadata and entry.metadata.count is defined %}
                                     {{ entry.metadata.count }} email(s) found
                                 {% elif entry.metadata and entry.metadata.job %}
