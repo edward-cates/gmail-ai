@@ -78,7 +78,7 @@ class TestBatchClassification:
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch("main.ChatAnthropic")
-    def test_fallback_on_parse_error(self, mock_anthropic_cls):
+    def test_raises_on_parse_error(self, mock_anthropic_cls):
         mock_llm = MagicMock()
         mock_anthropic_cls.return_value = mock_llm
 
@@ -87,11 +87,9 @@ class TestBatchClassification:
         mock_llm.invoke.return_value = mock_response
 
         messages = [{"idx": 1, "text": "hello", "sender": "Alice", "channel": "general"}]
-        result = processor.batch_classify_messages(messages, [])
-
-        assert len(result) == 1
-        assert result[0]["priority"] == "worth_reading"
-        assert result[0]["existing_topic_id"] is None
+        import pytest
+        with pytest.raises(ValueError, match="unparseable"):
+            processor.batch_classify_messages(messages, [])
 
 
 class TestDescriptionUpdates:

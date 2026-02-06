@@ -597,20 +597,8 @@ Respond with a JSON array, one entry per message in the same order:
         if isinstance(results, list):
             return results
     except (json.JSONDecodeError, IndexError) as e:
-        logger.warning(f"Failed to parse batch classification ({e}): {content[:500]}")
-
-    # Fallback: return generic classifications
-    return [
-        {
-            "msg_idx": m["idx"],
-            "existing_topic_id": None,
-            "topic_name": f'Unclassified: {m["channel"]}',
-            "priority": "worth_reading",
-            "action_items": [],
-            "summary": m["text"][:200],
-        }
-        for m in messages_with_context
-    ]
+        logger.error(f"Failed to parse batch classification ({e}): {content[:500]}")
+        raise ValueError(f"Opus returned unparseable response: {e}")
 
 
 # --- Claude: Description Updates (Haiku) ---
