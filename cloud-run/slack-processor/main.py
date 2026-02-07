@@ -451,6 +451,7 @@ PRIORITY_TO_LIST = {
     "needs_response": "Needs Response",
     "action_required": "Action Required",
     "worth_reading": "Worth Reading",
+    "noted": "Noted",
 }
 
 PRIORITY_ORDER = ["Needs Response", "Action Required", "Worth Reading", "Noted"]
@@ -547,8 +548,9 @@ subject, not by channel or time.
 For each message, assign a priority:
 - **needs_response**: someone is waiting on ME specifically to reply
 - **action_required**: I need to do something (review, approve, decide) but nobody's blocked
-- **worth_reading**: relevant info, no action needed from me — includes life updates,
-  what people are up to, social/personal messages that I'd want to see
+- **worth_reading**: relevant info, no action needed from me
+- **noted**: social/personal messages — kudos, life updates, what people are up to,
+  congratulations, casual chatter that I'd want to see but isn't work-relevant
 - **noise**: zero informational value — "thanks!", "ok", emoji-only, "got it", "+1", "lol"
   HOWEVER: if preceding context shows someone is agreeing/consenting to something
   actionable, that is NOT noise — classify based on what they're agreeing to.
@@ -573,7 +575,7 @@ Correct grouping:
 - Messages 2 → "🚀 Staging cache deploy" (worth_reading)
 - Messages 3 → "📋 Q2 planning doc" (action_required)
 - Messages 4, 7 → "⚡ API rate limiting" (worth_reading — Dave agrees with approach, Alice's PR is related)
-- Message 5 → "👶 Frank back from leave" (worth_reading — personal update I'd want to see)
+- Message 5 → "👶 Frank back from leave" (noted — personal update, not work-relevant)
 - Message 6 → noise (bare "ok" with no meaningful context)
 
 Note: messages 1, 2, 4, 7 are ALL from #backend but are THREE different topics.
@@ -587,7 +589,7 @@ Respond with a JSON array, one entry per message in the same order:
         "msg_idx": 1,
         "existing_topic_id": "card id or null",
         "topic_name": "emoji + short descriptive topic name (3-6 words), e.g. '🔍 Auth PR review'",
-        "priority": "needs_response|action_required|worth_reading|noise",
+        "priority": "needs_response|action_required|worth_reading|noted|noise",
         "action_items": ["action items directed at me, if any"],
         "summary": "1-2 sentence summary of this message's contribution to the topic"
     }},
@@ -1035,11 +1037,9 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
     for i, msg in enumerate(to_classify):
         msg["idx"] = i + 1
 
-    # Get existing topics (active cards only, excluding Noted)
     existing_topics = [
         {"id": c["id"], "name": c["name"], "list_name": list_map.get(c["idList"], "Unknown")}
         for c in cards
-        if list_map.get(c["idList"]) != "Noted"
     ]
 
     # Fetch recent history for channels in this batch
@@ -1260,7 +1260,6 @@ def process_reactions(reaction_events, slack, trello, cards, list_map, batch_tra
         matching_cards = [
             c for c in cards
             if f"#{channel_name}" in (c.get("desc") or "")
-            and list_map.get(c["idList"]) != "Noted"
         ]
 
         if not matching_cards:
