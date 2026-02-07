@@ -33,14 +33,13 @@ class TestHandleTrelloWebhook:
         assert status == 200
         assert body["skipped"] == "updateCard"
 
-    @patch("functions.coach_handler._get_coach_member_id", return_value="coach123")
-    def test_own_comment_skipped(self, _mock_id):
+    def test_coach_comment_skipped(self):
         req = _make_request(json_data={
             "action": {
                 "type": "commentCard",
-                "memberCreator": {"id": "coach123", "fullName": "Coach Bot"},
+                "memberCreator": {"id": "user456", "fullName": "Edward"},
                 "data": {
-                    "text": "Great job!",
+                    "text": "**[Coach]** Great job on that PR!",
                     "card": {"id": "card1"},
                     "board": {"id": "board1"},
                 },
@@ -48,11 +47,10 @@ class TestHandleTrelloWebhook:
         })
         body, status = handle_trello_webhook(req)
         assert status == 200
-        assert body["skipped"] == "own_comment"
+        assert body["skipped"] == "coach_comment"
 
     @patch("functions.coach_handler._resolve_board_id", return_value="expected_board")
-    @patch("functions.coach_handler._get_coach_member_id", return_value="coach123")
-    def test_wrong_board_skipped(self, _mock_id, _mock_board):
+    def test_wrong_board_skipped(self, _mock_board):
         req = _make_request(json_data={
             "action": {
                 "type": "commentCard",
@@ -70,8 +68,7 @@ class TestHandleTrelloWebhook:
 
     @patch("functions.coach_handler._resolve_board_id", return_value="board1")
     @patch("functions.coach_handler._trigger_coach_job")
-    @patch("functions.coach_handler._get_coach_member_id", return_value="coach123")
-    def test_valid_comment_triggers_job(self, _mock_id, mock_trigger, _mock_board):
+    def test_valid_comment_triggers_job(self, mock_trigger, _mock_board):
         req = _make_request(json_data={
             "action": {
                 "type": "commentCard",

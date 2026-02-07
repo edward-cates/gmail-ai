@@ -57,31 +57,27 @@ class TestReadBoardContext:
         mock_trello.get_cards.return_value = [
             {"id": "card1", "name": "Monday Push", "desc": "Bench day"},
         ]
-        mock_trello.get_my_member_id.return_value = "coach123"
         mock_trello.get_card_comments.return_value = [
             {
-                "memberCreator": {"id": "user456", "fullName": "Edward"},
                 "date": "2026-02-06T14:00:00",
                 "data": {"text": "Hit 225 on bench!"},
             },
             {
-                "memberCreator": {"id": "coach123", "fullName": "Coach Bot"},
                 "date": "2026-02-06T14:05:00",
-                "data": {"text": "Nice PR!"},
+                "data": {"text": "**[Coach]** Nice PR!"},
             },
         ]
 
         result = coach.read_board_context(mock_trello)
         assert "Monday Push" in result
-        assert "Client (Edward)" in result
-        assert "Coach (Coach Bot)" in result
+        assert "Client:" in result
+        assert "Coach:" in result
         assert "Hit 225 on bench!" in result
         assert "Nice PR!" in result
 
     def test_empty_board(self):
         mock_trello = MagicMock()
         mock_trello.get_cards.return_value = []
-        mock_trello.get_my_member_id.return_value = "coach123"
 
         result = coach.read_board_context(mock_trello)
         assert result == ""
@@ -95,10 +91,8 @@ class TestReadCardContext:
         mock_trello.get_card.return_value = {
             "name": "Tuesday Pull", "desc": "Back day",
         }
-        mock_trello.get_my_member_id.return_value = "coach123"
         mock_trello.get_card_comments.return_value = [
             {
-                "memberCreator": {"id": "user456", "fullName": "Edward"},
                 "date": "2026-02-06T10:00:00",
                 "data": {"text": "Feeling sore from yesterday"},
             },
@@ -106,7 +100,7 @@ class TestReadCardContext:
 
         result = coach.read_card_context(mock_trello, "card1")
         assert "Tuesday Pull" in result
-        assert "Client (Edward)" in result
+        assert "Client:" in result
         assert "Feeling sore" in result
 
 
@@ -176,7 +170,6 @@ class TestHandleMorning:
         mock_trello_cls.return_value = mock_trello
         mock_trello.get_board_desc.return_value = "# Spec"
         mock_trello.get_cards.return_value = []
-        mock_trello.get_my_member_id.return_value = "coach123"
         mock_trello.get_list_id.side_effect = lambda name: f"list_{name.lower()}"
         mock_trello.create_card.return_value = {"id": "new_card_123"}
         mock_trello.create_checklist.return_value = {"id": "cl_123"}
@@ -207,7 +200,6 @@ class TestHandleMorning:
         mock_trello = MagicMock()
         mock_trello_cls.return_value = mock_trello
         mock_trello.get_board_desc.return_value = "# Spec"
-        mock_trello.get_my_member_id.return_value = "coach123"
         mock_trello.get_list_id.side_effect = lambda name: f"list_{name.lower()}"
         mock_trello.get_cards.return_value = [
             {"id": "old_card", "name": "Sunday — Rest", "idList": "list_active"},
@@ -248,7 +240,6 @@ class TestHandleReply:
         mock_trello_cls.return_value = mock_trello
         mock_trello.get_board_desc.return_value = "# Spec"
         mock_trello.get_card.return_value = {"name": "Monday — Push", "desc": "Bench day"}
-        mock_trello.get_my_member_id.return_value = "coach123"
         mock_trello.get_card_comments.return_value = []
 
         mock_llm = MagicMock()

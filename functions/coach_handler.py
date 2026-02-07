@@ -17,7 +17,6 @@ from google.cloud import run_v2
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
-_coach_member_id = None
 _resolved_board_id = None
 
 
@@ -70,31 +69,6 @@ def _resolve_board_id():
     except Exception as e:
         logger.error(f"Failed to resolve board ID: {e}")
         return short_id
-
-
-def _get_coach_member_id():
-    """Get the Trello member ID for the coach's API token (cached)."""
-    global _coach_member_id  # noqa: PLW0603
-    if _coach_member_id:
-        return _coach_member_id
-
-    api_key = os.getenv("TRELLO_API_KEY", "")
-    token = os.getenv("TRELLO_TOKEN", "")
-    if not api_key or not token:
-        return None
-
-    try:
-        r = requests.get(
-            "https://api.trello.com/1/members/me",
-            params={"key": api_key, "token": token, "fields": "id"},
-            timeout=10,
-        )
-        r.raise_for_status()
-        _coach_member_id = r.json()["id"]
-        return _coach_member_id
-    except Exception as e:
-        logger.error(f"Failed to get coach member ID: {e}")
-        return None
 
 
 def _trigger_coach_job(trace_id, comment_text="", card_id="", mode="reply"):
@@ -161,11 +135,13 @@ def handle_trello_webhook(request):
     if action_type != "commentCard":
         return ({"ok": True, "skipped": action_type}, 200)
 
-    # Skip comments from the coach itself (avoid infinite loop)
-    commenter_id = action.get("memberCreator", {}).get("id", "")
-    coach_id = _get_coach_member_id()
-    if coach_id and commenter_id == coach_id:
-        return ({"ok": True, "skipped": "own_comment"}, 200)
+    # Skip comments posted by the coach (avoid infinite loop).
+    # Since the Trello API token belongs to the user, the coach posts as
+    # the user — we can't filter by member ID. Instead, coach comments
+    # are prefixed with a marker.
+    comment_text = action.get("data", {}).get("text", "")
+    if comment_text.startswith("**[Coach]**"):
+        return ({"ok": True, "skipped": "coach_comment"}, 200)
 
     # Verify the action is on our expected board
     board_id = action.get("data", {}).get("board", {}).get("id", "")

@@ -55,22 +55,8 @@ class TrelloClient:
             raise ValueError(
                 "TRELLO_API_KEY, TRELLO_TOKEN, and TRELLO_COACH_BOARD_ID must be set"
             )
-        self._member_id = None
-
     def _params(self, **extra):
         return {"key": self.api_key, "token": self.token, **extra}
-
-    def get_my_member_id(self):
-        """Get the authenticated member's ID (cached)."""
-        if self._member_id:
-            return self._member_id
-        r = requests.get(
-            f"{self.BASE_URL}/members/me",
-            params=self._params(fields="id"),
-        )
-        r.raise_for_status()
-        self._member_id = r.json()["id"]
-        return self._member_id
 
     def get_board_desc(self):
         """Get the board description (used as spec/manifesto)."""
@@ -152,10 +138,15 @@ class TrelloClient:
         return r.json()
 
     def add_comment(self, card_id, text):
-        """Add a comment to a card."""
+        """Add a comment to a card, prefixed with coach marker.
+
+        The marker lets the webhook handler distinguish coach comments
+        from user comments (both come from the same Trello account).
+        """
+        prefixed = f"**[Coach]** {text}"
         r = requests.post(
             f"{self.BASE_URL}/cards/{card_id}/actions/comments",
-            params=self._params(text=text),
+            params=self._params(text=prefixed),
         )
         r.raise_for_status()
         return r.json()
@@ -182,13 +173,20 @@ class TrelloClient:
 # --- Context Helpers ---
 
 
+COACH_PREFIX = "**[Coach]**"
+
+
+def _comment_role(text):
+    """Determine if a comment is from the coach or the client."""
+    return "Coach" if text.startswith(COACH_PREFIX) else "Client"
+
+
 def read_board_context(trello):
     """Read full board context: all non-archived cards with their comments.
 
     Returns a formatted string with all cards and conversations.
     """
     cards = trello.get_cards()
-    coach_id = trello.get_my_member_id()
 
     lines = []
     for card in cards:
@@ -198,11 +196,10 @@ def read_board_context(trello):
 
         comments = trello.get_card_comments(card["id"])
         for comment in comments:
-            author = comment.get("memberCreator", {}).get("fullName", "Unknown")
-            role = "Coach" if comment["memberCreator"]["id"] == coach_id else "Client"
             ts = comment.get("date", "")[:16]
             text = comment.get("data", {}).get("text", "")
-            lines.append(f"[{ts}] {role} ({author}): {text}")
+            role = _comment_role(text)
+            lines.append(f"[{ts}] {role}: {text}")
         lines.append("")
 
     return "\n".join(lines)
@@ -214,7 +211,6 @@ def read_card_context(trello, card_id):
     Returns a formatted string with the card name and all comments.
     """
     card = trello.get_card(card_id)
-    coach_id = trello.get_my_member_id()
     comments = trello.get_card_comments(card_id)
 
     lines = [f"### Card: {card['name']}"]
@@ -223,11 +219,10 @@ def read_card_context(trello, card_id):
     lines.append("")
 
     for comment in comments:
-        author = comment.get("memberCreator", {}).get("fullName", "Unknown")
-        role = "Coach" if comment["memberCreator"]["id"] == coach_id else "Client"
         ts = comment.get("date", "")[:16]
         text = comment.get("data", {}).get("text", "")
-        lines.append(f"[{ts}] {role} ({author}): {text}")
+        role = _comment_role(text)
+        lines.append(f"[{ts}] {role}: {text}")
 
     return "\n".join(lines)
 
