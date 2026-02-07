@@ -224,6 +224,7 @@ Cloud Run (coach):
 - `COACH_MODE` — "morning" or "reply" (set via container override)
 - `COMMENT_TEXT` — User's comment text (reply mode only)
 - `CARD_ID` — Card the comment was on (reply mode only)
+- `ACTION_ID` — Trello action ID of the user's comment (reply mode, for reactions)
 
 ### Post-Deploy Setup
 

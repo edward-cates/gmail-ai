@@ -209,6 +209,16 @@ class TrelloClient:
         r.raise_for_status()
         return r.json()
 
+    def add_reaction(self, action_id, emoji_short_name):
+        """Add an emoji reaction to a comment (action)."""
+        r = requests.post(
+            f"{self.BASE_URL}/actions/{action_id}/reactions",
+            params=self._params(),
+            json={"shortName": emoji_short_name},
+        )
+        r.raise_for_status()
+        return r.json()
+
     def set_check_item_state(self, card_id, check_item_id, state="complete"):
         """Check or uncheck a checklist item. state: 'complete' or 'incomplete'."""
         r = requests.put(
@@ -655,6 +665,7 @@ def handle_reply(trace_id):
     """Process user comment on a card and respond."""
     comment_text = os.getenv("COMMENT_TEXT", "")
     card_id = os.getenv("CARD_ID", "")
+    action_id = os.getenv("ACTION_ID", "")
 
     if not comment_text or not card_id:
         log_structured(trace_id, "skip", metadata={"reason": "missing comment_text or card_id"})
@@ -684,6 +695,13 @@ def handle_reply(trace_id):
         # Post reply
         trello.add_comment(card_id, reply_text)
         log_structured(trace_id, "add_comment", metadata={"length": len(reply_text)})
+
+        # React to the user's comment with ✅ to signal the coach has responded
+        if action_id:
+            try:
+                trello.add_reaction(action_id, "white_check_mark")
+            except Exception:
+                pass  # Non-critical
 
         # Execute board actions (skip comment actions on the reply card to avoid duplicates)
         actions = [

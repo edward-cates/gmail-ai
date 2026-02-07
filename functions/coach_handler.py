@@ -71,7 +71,25 @@ def _resolve_board_id():
         return short_id
 
 
-def _trigger_coach_job(trace_id, comment_text="", card_id="", mode="reply"):
+def _add_reaction(action_id, emoji_short_name):
+    """Add an emoji reaction to a Trello comment (action)."""
+    api_key = os.getenv("TRELLO_API_KEY", "")
+    token = os.getenv("TRELLO_TOKEN", "")
+    if not api_key or not token or not action_id:
+        return
+    try:
+        r = requests.post(
+            f"https://api.trello.com/1/actions/{action_id}/reactions",
+            params={"key": api_key, "token": token},
+            json={"shortName": emoji_short_name},
+            timeout=10,
+        )
+        r.raise_for_status()
+    except Exception as e:
+        logger.warning(f"Failed to add reaction: {e}")
+
+
+def _trigger_coach_job(trace_id, comment_text="", card_id="", mode="reply", action_id=""):
     """Trigger the coach Cloud Run Job."""
     project_id = os.getenv("GMAIL_AI_PROJECT_ID", "")
     location = os.getenv("GMAIL_AI_LOCATION", "us-central1")
@@ -89,6 +107,7 @@ def _trigger_coach_job(trace_id, comment_text="", card_id="", mode="reply"):
             env_vars.extend([
                 run_v2.EnvVar(name="COMMENT_TEXT", value=comment_text),
                 run_v2.EnvVar(name="CARD_ID", value=card_id),
+                run_v2.EnvVar(name="ACTION_ID", value=action_id),
             ])
 
         run_request = run_v2.RunJobRequest(
@@ -157,13 +176,18 @@ def handle_trello_webhook(request):
     if not comment_text or not card_id:
         return ({"ok": True, "skipped": "empty"}, 200)
 
+    action_id = action.get("id", "")
+
     _log_structured(trace_id, "comment_received", metadata={
         "commenter": commenter_name,
         "card_id": card_id,
         "text_preview": comment_text[:120],
     })
 
-    _trigger_coach_job(trace_id, comment_text, card_id)
+    # React with 👀 immediately so user knows the coach is reading
+    _add_reaction(action_id, "eyes")
+
+    _trigger_coach_job(trace_id, comment_text, card_id, action_id=action_id)
 
     return ({"ok": True, "trace_id": trace_id}, 200)
 
