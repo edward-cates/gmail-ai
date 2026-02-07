@@ -676,8 +676,12 @@ def handle_reply(trace_id):
         trello.add_comment(card_id, reply_text)
         log_structured(trace_id, "add_comment", metadata={"length": len(reply_text)})
 
-        # Execute board actions
-        _execute_actions(trello, trace_id, result.get("actions", []))
+        # Execute board actions (skip comment actions on the reply card to avoid duplicates)
+        actions = [
+            a for a in result.get("actions", [])
+            if not (a.get("action") == "comment" and a.get("card_id") == card_id)
+        ]
+        _execute_actions(trello, trace_id, actions)
 
         # Update spec if needed
         _apply_spec_if_needed(trello, trace_id, spec, result.get("spec_update_instruction"))
