@@ -127,16 +127,25 @@ class TestReadCardContext:
         assert "Feeling sore" in result
 
 
+def _mock_api_response(text):
+    """Create a mock Anthropic API response with the given text."""
+    block = MagicMock()
+    block.text = text
+    resp = MagicMock()
+    resp.content = [block]
+    return resp
+
+
 class TestGenerateMorningCards:
     """Tests for generate_morning_cards()."""
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
-    @patch.object(coach, "ChatAnthropic")
+    @patch.object(coach.anthropic, "Anthropic")
     def test_returns_cards(self, mock_cls):
-        mock_llm = MagicMock()
-        mock_cls.return_value = mock_llm
-        mock_llm.invoke.return_value = MagicMock(
-            content=json.dumps({
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.messages.create.return_value = _mock_api_response(
+            json.dumps({
                 "exercise": {
                     "title": "Monday — Push Day",
                     "description": "## Bench\n4x8",
@@ -157,19 +166,19 @@ class TestGenerateMorningCards:
         assert result["exercise"]["checklist"] == ["Bench 4x8"]
         assert result["nutrition"]["checklist"] == ["Meal 1: Oatmeal"]
         assert result["spec_update_instruction"] is None
-        assert mock_cls.call_args[1]["model"] == "claude-opus-4-6"
+        assert mock_client.messages.create.call_args[1]["model"] == "claude-opus-4-6"
 
 
 class TestGenerateReply:
     """Tests for generate_reply()."""
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
-    @patch.object(coach, "ChatAnthropic")
+    @patch.object(coach.anthropic, "Anthropic")
     def test_reply_without_spec_update(self, mock_cls):
-        mock_llm = MagicMock()
-        mock_cls.return_value = mock_llm
-        mock_llm.invoke.return_value = MagicMock(
-            content=json.dumps({
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.messages.create.return_value = _mock_api_response(
+            json.dumps({
                 "message": "Nice work!",
                 "actions": [],
                 "spec_update_instruction": None,
@@ -180,12 +189,12 @@ class TestGenerateReply:
         assert result["spec_update_instruction"] is None
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
-    @patch.object(coach, "ChatAnthropic")
+    @patch.object(coach.anthropic, "Anthropic")
     def test_reply_with_spec_update_instruction(self, mock_cls):
-        mock_llm = MagicMock()
-        mock_cls.return_value = mock_llm
-        mock_llm.invoke.return_value = MagicMock(
-            content=json.dumps({
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.messages.create.return_value = _mock_api_response(
+            json.dumps({
                 "message": "225 5x5 is huge!",
                 "actions": [],
                 "spec_update_instruction": "Update squat PR to 225x5x5",
@@ -200,24 +209,26 @@ class TestApplySpecUpdate:
     """Tests for apply_spec_update() — Haiku-based spec editing."""
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
-    @patch.object(coach, "ChatAnthropic")
+    @patch.object(coach.anthropic, "Anthropic")
     def test_applies_instruction(self, mock_cls):
-        mock_llm = MagicMock()
-        mock_cls.return_value = mock_llm
-        mock_llm.invoke.return_value = MagicMock(
-            content="# Spec\n## PRs\n- Squat: 225x5x5"
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.messages.create.return_value = _mock_api_response(
+            "# Spec\n## PRs\n- Squat: 225x5x5"
         )
 
         result = coach.apply_spec_update("# Spec\n## PRs\n- Squat: 205x5x5", "Update squat PR to 225x5x5")
         assert result == "# Spec\n## PRs\n- Squat: 225x5x5"
-        assert mock_cls.call_args[1]["model"] == "claude-haiku-4-5-20251001"
+        assert mock_client.messages.create.call_args[1]["model"] == "claude-haiku-4-5-20251001"
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
-    @patch.object(coach, "ChatAnthropic")
+    @patch.object(coach.anthropic, "Anthropic")
     def test_strips_whitespace(self, mock_cls):
-        mock_llm = MagicMock()
-        mock_cls.return_value = mock_llm
-        mock_llm.invoke.return_value = MagicMock(content="  # Spec\nUpdated  \n")
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.messages.create.return_value = _mock_api_response(
+            "  # Spec\nUpdated  \n"
+        )
 
         result = coach.apply_spec_update("# Spec", "some update")
         assert result == "# Spec\nUpdated"
@@ -338,8 +349,8 @@ class TestHandleMorning:
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch.object(coach, "TrelloClient")
-    @patch.object(coach, "ChatAnthropic")
-    def test_creates_exercise_and_nutrition_cards(self, mock_llm_cls, mock_trello_cls):
+    @patch.object(coach.anthropic, "Anthropic")
+    def test_creates_exercise_and_nutrition_cards(self, mock_api_cls, mock_trello_cls):
         mock_trello = MagicMock()
         mock_trello_cls.return_value = mock_trello
         mock_trello.get_board_desc.return_value = "# Spec"
@@ -355,10 +366,10 @@ class TestHandleMorning:
             {"id": "cl_nutrition"},
         ]
 
-        mock_llm = MagicMock()
-        mock_llm_cls.return_value = mock_llm
-        mock_llm.invoke.return_value = MagicMock(
-            content=json.dumps({
+        mock_client = MagicMock()
+        mock_api_cls.return_value = mock_client
+        mock_client.messages.create.return_value = _mock_api_response(
+            json.dumps({
                 "exercise": {
                     "title": "Monday — Push Day",
                     "description": "## Bench\n4x8 @ 185",
@@ -391,18 +402,18 @@ class TestHandleMorning:
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch.object(coach, "TrelloClient")
-    @patch.object(coach, "ChatAnthropic")
-    def test_skips_null_cards(self, mock_llm_cls, mock_trello_cls):
+    @patch.object(coach.anthropic, "Anthropic")
+    def test_skips_null_cards(self, mock_api_cls, mock_trello_cls):
         mock_trello = MagicMock()
         mock_trello_cls.return_value = mock_trello
         mock_trello.get_board_desc.return_value = "# Spec"
         mock_trello.get_cards.return_value = []
         mock_trello.get_lists.return_value = []
 
-        mock_llm = MagicMock()
-        mock_llm_cls.return_value = mock_llm
-        mock_llm.invoke.return_value = MagicMock(
-            content=json.dumps({
+        mock_client = MagicMock()
+        mock_api_cls.return_value = mock_client
+        mock_client.messages.create.return_value = _mock_api_response(
+            json.dumps({
                 "exercise": None,
                 "nutrition": {
                     "title": "Rest Day — Nutrition",
@@ -434,8 +445,8 @@ class TestHandleReply:
         "CARD_ID": "card_abc",
     })
     @patch.object(coach, "TrelloClient")
-    @patch.object(coach, "ChatAnthropic")
-    def test_replies_to_comment(self, mock_llm_cls, mock_trello_cls):
+    @patch.object(coach.anthropic, "Anthropic")
+    def test_replies_to_comment(self, mock_api_cls, mock_trello_cls):
         mock_trello = MagicMock()
         mock_trello_cls.return_value = mock_trello
         mock_trello.get_board_desc.return_value = "# Spec"
@@ -444,16 +455,16 @@ class TestHandleReply:
         mock_trello.get_card.return_value = {"name": "Monday — Push", "desc": "Bench day"}
         mock_trello.get_card_comments.return_value = []
 
-        mock_llm = MagicMock()
-        mock_llm_cls.return_value = mock_llm
+        mock_client = MagicMock()
+        mock_api_cls.return_value = mock_client
         # First call: generate_reply (Opus), second call: apply_spec_update (Haiku)
-        mock_llm.invoke.side_effect = [
-            MagicMock(content=json.dumps({
+        mock_client.messages.create.side_effect = [
+            _mock_api_response(json.dumps({
                 "message": "225 is a huge PR!",
                 "actions": [{"action": "check_item", "card_id": "card_abc", "item_id": "ci1"}],
                 "spec_update_instruction": "Update squat PR to 225x5x5",
             })),
-            MagicMock(content="# Updated\n- Squat: 225"),
+            _mock_api_response("# Updated\n- Squat: 225"),
         ]
 
         coach.handle_reply("trace-3")

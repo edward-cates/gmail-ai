@@ -411,6 +411,8 @@
                                     #{{ entry.metadata.channel }}
                                 {% elif entry.metadata and entry.metadata.sid %}
                                     sent ({{ entry.metadata.length }} chars)
+                                {% elif entry.metadata and entry.metadata.spec_length is defined %}
+                                    spec: {{ entry.metadata.spec_length }} chars{% if entry.metadata.instruction %} — {{ entry.metadata.instruction }}{% endif %}
                                 {% elif entry.metadata and entry.metadata.board_length is defined %}
                                     board: {{ entry.metadata.board_length }}, card: {{ entry.metadata.card_length }} chars
                                 {% elif entry.metadata and entry.metadata.length is defined %}

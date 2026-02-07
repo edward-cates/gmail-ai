@@ -18,8 +18,8 @@ import re
 import sys
 from datetime import datetime, timedelta, timezone
 
+import anthropic
 import requests
-from langchain_anthropic import ChatAnthropic
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -297,6 +297,14 @@ def read_card_context(trello, card_id):
 # --- Claude ---
 
 
+def _get_client():
+    """Create an Anthropic client."""
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not set")
+    return anthropic.Anthropic(api_key=api_key)
+
+
 def _parse_json_response(content):
     """Parse Claude's JSON response, handling markdown fences."""
     content = content.strip()
@@ -318,13 +326,12 @@ def apply_spec_update(current_spec, instruction):
     The coach describes what to change in plain English; Haiku applies
     the edit and returns the full updated spec.
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY not set")
+    client = _get_client()
 
-    llm = ChatAnthropic(model=SPEC_MODEL, api_key=api_key, max_tokens=8000)
-
-    prompt = f"""You are editing a client spec document. Apply the requested changes and return the COMPLETE updated document.
+    response = client.messages.create(
+        model=SPEC_MODEL,
+        max_tokens=8000,
+        messages=[{"role": "user", "content": f"""You are editing a client spec document. Apply the requested changes and return the COMPLETE updated document.
 
 ## Current Spec
 {current_spec}
@@ -337,19 +344,14 @@ def apply_spec_update(current_spec, instruction):
 - Preserve all existing content that isn't being changed
 - Keep the same markdown formatting style
 - Only make the changes described above — nothing else
-- Return ONLY the updated spec text, no commentary or markdown fences"""
-
-    response = llm.invoke(prompt)
-    return response.content.strip()
+- Return ONLY the updated spec text, no commentary or markdown fences"""}],
+    )
+    return response.content[0].text.strip()
 
 
 def generate_morning_cards(spec, board_context):
     """Generate daily exercise and nutrition cards."""
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY not set")
-
-    llm = ChatAnthropic(model=MODEL, api_key=api_key, max_tokens=8000)
+    client = _get_client()
 
     now_ct = datetime.now(tz=CT)
     day_of_week = now_ct.strftime("%A")
@@ -420,17 +422,17 @@ Either "exercise" or "nutrition" can be null if not applicable for today.
 "actions" is an array of board actions to take (can be empty).
 "spec_update_instruction" is a brief description — NOT the full spec."""
 
-    response = llm.invoke(prompt)
-    return _parse_json_response(response.content)
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=8000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return _parse_json_response(response.content[0].text)
 
 
 def generate_reply(spec, board_context, card_context, user_comment, card_name):
     """Process user comment and generate reply + optional spec updates."""
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY not set")
-
-    llm = ChatAnthropic(model=MODEL, api_key=api_key, max_tokens=8000)
+    client = _get_client()
 
     now_ct = datetime.now(tz=CT)
     day_of_week = now_ct.strftime("%A")
@@ -494,8 +496,12 @@ Respond with JSON only:
 "actions" is an array of board actions to take (can be empty).
 "spec_update_instruction" is a brief description — NOT the full spec."""
 
-    response = llm.invoke(prompt)
-    return _parse_json_response(response.content)
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=8000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return _parse_json_response(response.content[0].text)
 
 
 # --- Handlers ---
@@ -554,6 +560,7 @@ def _apply_spec_if_needed(trello, trace_id, spec, instruction):
         trello.update_board_desc(updated_spec)
         log_structured(trace_id, "spec_updated", metadata={
             "instruction": instruction[:120],
+            "spec_length": len(updated_spec),
         })
     except Exception as e:
         logger.error(f"[{trace_id}] Spec update failed: {e}", exc_info=True)
