@@ -515,10 +515,12 @@ For example, if they say "can you make me a leg day card?", create one on the Ex
 ## Output
 Respond with JSON only:
 {{
+    "reaction": "emoji shortname reacting to the client's message (e.g. muscle, fire, eyes, tada, heart, thumbsup, thinking_face, saluting_face, clap)",
     "message": "your reply comment text",
     "actions": [],
     "spec_update_instruction": null or "brief description of what to change in the spec"
 }}
+"reaction" is an emoji shortname — pick one that fits your reaction to what they said.
 "actions" is an array of board actions to take (can be empty).
 "spec_update_instruction" is a brief description — NOT the full spec."""
 
@@ -692,15 +694,17 @@ def handle_reply(trace_id):
         reply_text = result["message"]
         log_structured(trace_id, "generate_reply", metadata={"length": len(reply_text)})
 
-        # Post reply and react to it
-        reply_action = trello.add_comment(card_id, reply_text)
+        # React to the user's comment with the coach's chosen emoji
+        reaction = result.get("reaction", "")
+        if action_id and reaction:
+            try:
+                trello.add_reaction(action_id, reaction)
+            except Exception:
+                pass  # Non-critical
+
+        # Post reply
+        trello.add_comment(card_id, reply_text)
         log_structured(trace_id, "add_comment", metadata={"length": len(reply_text)})
-        try:
-            reply_action_id = reply_action.get("id", "")
-            if reply_action_id:
-                trello.add_reaction(reply_action_id, "muscle")
-        except Exception:
-            pass  # Non-critical
 
         # Execute board actions (skip comment actions on the reply card to avoid duplicates)
         actions = [
