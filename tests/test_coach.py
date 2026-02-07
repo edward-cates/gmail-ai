@@ -37,16 +37,24 @@ class TestJsonParsing:
         )
         assert result["message"] == "yo"
 
-    def test_morning_regimen_format(self):
+    def test_morning_cards_format(self):
         result = coach._parse_json_response(json.dumps({
-            "card_title": "Monday, Feb 6 — Push Day",
-            "regimen": "## Bench Press\n4x8 @ 185",
-            "exercises": ["Bench Press 4x8 @ 185"],
-            "coach_message": "Let's go!",
+            "exercise": {
+                "title": "Monday, Feb 6 — Push Day",
+                "description": "## Bench Press\n4x8 @ 185",
+                "checklist": ["Bench Press 4x8 @ 185"],
+                "comment": "Let's go!",
+            },
+            "nutrition": {
+                "title": "Monday, Feb 6 — Nutrition",
+                "description": "## Meals",
+                "checklist": ["Meal 1: Oatmeal + whey"],
+            },
             "spec_updates": None,
         }))
-        assert result["card_title"] == "Monday, Feb 6 — Push Day"
-        assert result["exercises"] == ["Bench Press 4x8 @ 185"]
+        assert result["exercise"]["title"] == "Monday, Feb 6 — Push Day"
+        assert result["exercise"]["checklist"] == ["Bench Press 4x8 @ 185"]
+        assert result["nutrition"]["checklist"] == ["Meal 1: Oatmeal + whey"]
 
 
 class TestReadBoardContext:
@@ -54,8 +62,11 @@ class TestReadBoardContext:
 
     def test_formats_cards_and_comments(self):
         mock_trello = MagicMock()
+        mock_trello.get_lists.return_value = [
+            {"id": "list1", "name": "Exercise"},
+        ]
         mock_trello.get_cards.return_value = [
-            {"id": "card1", "name": "Monday Push", "desc": "Bench day"},
+            {"id": "card1", "name": "Monday Push", "desc": "Bench day", "idList": "list1"},
         ]
         mock_trello.get_card_comments.return_value = [
             {
@@ -69,7 +80,7 @@ class TestReadBoardContext:
         ]
 
         result = coach.read_board_context(mock_trello)
-        assert "Monday Push" in result
+        assert "[Exercise] Monday Push" in result
         assert "Client:" in result
         assert "Coach:" in result
         assert "Hit 225 on bench!" in result
@@ -78,6 +89,7 @@ class TestReadBoardContext:
     def test_empty_board(self):
         mock_trello = MagicMock()
         mock_trello.get_cards.return_value = []
+        mock_trello.get_lists.return_value = []
 
         result = coach.read_board_context(mock_trello)
         assert result == ""
@@ -104,26 +116,34 @@ class TestReadCardContext:
         assert "Feeling sore" in result
 
 
-class TestGenerateMorningRegimen:
-    """Tests for generate_morning_regimen()."""
+class TestGenerateMorningCards:
+    """Tests for generate_morning_cards()."""
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch.object(coach, "ChatAnthropic")
-    def test_returns_regimen(self, mock_cls):
+    def test_returns_cards(self, mock_cls):
         mock_llm = MagicMock()
         mock_cls.return_value = mock_llm
         mock_llm.invoke.return_value = MagicMock(
             content=json.dumps({
-                "card_title": "Monday — Push Day",
-                "regimen": "## Bench\n4x8",
-                "exercises": ["Bench 4x8"],
-                "coach_message": "Let's go!",
+                "exercise": {
+                    "title": "Monday — Push Day",
+                    "description": "## Bench\n4x8",
+                    "checklist": ["Bench 4x8"],
+                    "comment": "Let's go!",
+                },
+                "nutrition": {
+                    "title": "Monday — Nutrition",
+                    "description": "## Meals",
+                    "checklist": ["Meal 1: Oatmeal"],
+                },
                 "spec_updates": None,
             })
         )
-        result = coach.generate_morning_regimen("# Spec\nGoals: gain muscle", "")
-        assert result["card_title"] == "Monday — Push Day"
-        assert result["exercises"] == ["Bench 4x8"]
+        result = coach.generate_morning_cards("# Spec\nGoals: gain muscle", "")
+        assert result["exercise"]["title"] == "Monday — Push Day"
+        assert result["exercise"]["checklist"] == ["Bench 4x8"]
+        assert result["nutrition"]["checklist"] == ["Meal 1: Oatmeal"]
         assert result["spec_updates"] is None
         assert mock_cls.call_args[1]["model"] == "claude-opus-4-6"
 
@@ -139,7 +159,7 @@ class TestGenerateReply:
         mock_llm.invoke.return_value = MagicMock(
             content=json.dumps({"message": "Nice work!", "spec_updates": None})
         )
-        result = coach.generate_reply("# Spec", "", "Did 3x10 bench at 185", "Push Day")
+        result = coach.generate_reply("# Spec", "", "", "Did 3x10 bench at 185", "Push Day")
         assert result["message"] == "Nice work!"
         assert result["spec_updates"] is None
 
@@ -154,7 +174,7 @@ class TestGenerateReply:
                 "spec_updates": "# Updated spec\n## Progress\n- 225x5x5 squat",
             })
         )
-        result = coach.generate_reply("# Spec", "", "Hit 225 for 5x5!", "Leg Day")
+        result = coach.generate_reply("# Spec", "", "", "Hit 225 for 5x5!", "Leg Day")
         assert result["spec_updates"] is not None
         assert "225" in result["spec_updates"]
 
@@ -165,64 +185,88 @@ class TestHandleMorning:
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch.object(coach, "TrelloClient")
     @patch.object(coach, "ChatAnthropic")
-    def test_creates_card_and_checklist(self, mock_llm_cls, mock_trello_cls):
+    def test_creates_exercise_and_nutrition_cards(self, mock_llm_cls, mock_trello_cls):
         mock_trello = MagicMock()
         mock_trello_cls.return_value = mock_trello
         mock_trello.get_board_desc.return_value = "# Spec"
         mock_trello.get_cards.return_value = []
+        mock_trello.get_lists.return_value = []
         mock_trello.get_list_id.side_effect = lambda name: f"list_{name.lower()}"
-        mock_trello.create_card.return_value = {"id": "new_card_123"}
-        mock_trello.create_checklist.return_value = {"id": "cl_123"}
+        mock_trello.create_card.side_effect = [
+            {"id": "exercise_card"},
+            {"id": "nutrition_card"},
+        ]
+        mock_trello.create_checklist.side_effect = [
+            {"id": "cl_exercise"},
+            {"id": "cl_nutrition"},
+        ]
 
         mock_llm = MagicMock()
         mock_llm_cls.return_value = mock_llm
         mock_llm.invoke.return_value = MagicMock(
             content=json.dumps({
-                "card_title": "Monday — Push Day",
-                "regimen": "## Bench\n4x8 @ 185",
-                "exercises": ["Bench 4x8 @ 185", "Incline DB 3x10 @ 70"],
-                "coach_message": "Time to push!",
+                "exercise": {
+                    "title": "Monday — Push Day",
+                    "description": "## Bench\n4x8 @ 185",
+                    "checklist": ["Bench 4x8 @ 185", "Incline DB 3x10 @ 70"],
+                    "comment": "Time to push!",
+                },
+                "nutrition": {
+                    "title": "Monday — Nutrition",
+                    "description": "## Meals",
+                    "checklist": ["Meal 1: Oatmeal + whey"],
+                },
                 "spec_updates": None,
             })
         )
 
         coach.handle_morning("trace-1")
 
-        mock_trello.create_card.assert_called_once()
-        mock_trello.create_checklist.assert_called_once_with("new_card_123")
-        assert mock_trello.add_checklist_item.call_count == 2
-        mock_trello.add_comment.assert_called_once_with("new_card_123", "Time to push!")
+        assert mock_trello.create_card.call_count == 2
+        # Exercise card
+        mock_trello.create_card.assert_any_call(
+            "list_exercise", "Monday — Push Day", "## Bench\n4x8 @ 185",
+        )
+        # Nutrition card
+        mock_trello.create_card.assert_any_call(
+            "list_nutrition", "Monday — Nutrition", "## Meals",
+        )
+        assert mock_trello.add_checklist_item.call_count == 3  # 2 exercise + 1 nutrition
+        mock_trello.add_comment.assert_called_once_with("exercise_card", "Time to push!")
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch.object(coach, "TrelloClient")
     @patch.object(coach, "ChatAnthropic")
-    def test_moves_active_cards_to_log(self, mock_llm_cls, mock_trello_cls):
+    def test_skips_null_cards(self, mock_llm_cls, mock_trello_cls):
         mock_trello = MagicMock()
         mock_trello_cls.return_value = mock_trello
         mock_trello.get_board_desc.return_value = "# Spec"
-        mock_trello.get_list_id.side_effect = lambda name: f"list_{name.lower()}"
-        mock_trello.get_cards.return_value = [
-            {"id": "old_card", "name": "Sunday — Rest", "idList": "list_active"},
-        ]
-        mock_trello.get_card_comments.return_value = []
-        mock_trello.create_card.return_value = {"id": "new_card"}
-        mock_trello.create_checklist.return_value = {"id": "cl_1"}
+        mock_trello.get_cards.return_value = []
+        mock_trello.get_lists.return_value = []
 
         mock_llm = MagicMock()
         mock_llm_cls.return_value = mock_llm
         mock_llm.invoke.return_value = MagicMock(
             content=json.dumps({
-                "card_title": "Monday — Push",
-                "regimen": "## Bench",
-                "exercises": [],
-                "coach_message": "",
+                "exercise": None,
+                "nutrition": {
+                    "title": "Rest Day — Nutrition",
+                    "description": "Recovery meals",
+                    "checklist": ["High protein meals"],
+                },
                 "spec_updates": None,
             })
         )
 
+        mock_trello.get_list_id.side_effect = lambda name: f"list_{name.lower()}"
+        mock_trello.create_card.return_value = {"id": "nutr_card"}
+        mock_trello.create_checklist.return_value = {"id": "cl_1"}
+
         coach.handle_morning("trace-2")
 
-        mock_trello.move_card.assert_called_once_with("old_card", "list_log")
+        # Only nutrition card created
+        mock_trello.create_card.assert_called_once()
+        mock_trello.move_card.assert_not_called()
 
 
 class TestHandleReply:
@@ -239,6 +283,8 @@ class TestHandleReply:
         mock_trello = MagicMock()
         mock_trello_cls.return_value = mock_trello
         mock_trello.get_board_desc.return_value = "# Spec"
+        mock_trello.get_lists.return_value = []
+        mock_trello.get_cards.return_value = []
         mock_trello.get_card.return_value = {"name": "Monday — Push", "desc": "Bench day"}
         mock_trello.get_card_comments.return_value = []
 

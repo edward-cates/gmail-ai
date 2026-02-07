@@ -1,11 +1,13 @@
 """Muscle Growth Coach - Cloud Run Job.
 
 Trello-based coaching agent. Two modes:
-- morning: Read board (spec + card history), generate daily regimen card
+- morning: Read board (spec + card history), generate exercise + nutrition cards
 - reply: Read board desc + card comments, respond to user's comment
 
+Board has three lists: Exercise, Nutrition, Forum.
+
 Reads COACH_MODE from environment:
-- "morning": Create daily regimen card with exercises + checklist
+- "morning": Create daily exercise card + nutrition card
 - "reply": Process user comment on a card and respond
 """
 
@@ -187,13 +189,19 @@ def _comment_role(text):
 def read_board_context(trello):
     """Read full board context: all non-archived cards with their comments.
 
-    Returns a formatted string with all cards and conversations.
+    Returns a formatted string with all cards and conversations,
+    including which list each card belongs to.
     """
     cards = trello.get_cards()
 
+    # Build list ID → name mapping
+    lists = trello.get_lists()
+    list_names = {lst["id"]: lst["name"] for lst in lists}
+
     lines = []
     for card in cards:
-        lines.append(f"### Card: {card['name']}")
+        list_name = list_names.get(card.get("idList"), "Unknown")
+        lines.append(f"### [{list_name}] {card['name']}")
         if card.get("desc"):
             lines.append(card["desc"][:500])
 
@@ -248,65 +256,81 @@ def _parse_json_response(content):
     return json.loads(content)
 
 
-def generate_morning_regimen(spec, board_context):
-    """Generate the daily morning regimen card."""
+def generate_morning_cards(spec, board_context):
+    """Generate daily exercise and nutrition cards."""
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set")
 
-    llm = ChatAnthropic(model=MODEL, api_key=api_key, max_tokens=4000)
+    llm = ChatAnthropic(model=MODEL, api_key=api_key, max_tokens=8000)
 
     now_ct = datetime.now(tz=CT)
     day_of_week = now_ct.strftime("%A")
     date_str = now_ct.strftime("%B %d, %Y")
 
     prompt = f"""You are a muscle growth coach managing a client's training via a Trello board.
-Each morning you create a card with the day's regimen.
+Each morning you create cards for the day's training and nutrition.
 
 Today is {day_of_week}, {date_str}.
 
+## Board Structure
+The board has three lists:
+- **Exercise** — one card per workout (title, full routine in description, checklist of exercises)
+- **Nutrition** — cards for meals, grocery runs, supplements (title, description, checklist of items)
+- **Forum** — ongoing discussion topics (you don't create these in the morning routine)
+
 ## Client Spec (board description — your living knowledge about this client)
-{spec or "(No spec yet — introduce yourself and ask about their goals in the coach_message)"}
+{spec or "(No spec yet — introduce yourself and ask about their goals in the exercise comment)"}
 
 ## Recent Board Activity (all cards and conversations)
 {board_context or "(First interaction — no history yet)"}
 
 ## Your Task
-Create today's training card. Consider:
+Create today's exercise and nutrition cards. Consider:
 - What day of the week it is (training day vs rest day per their schedule)
 - What happened in recent conversations (soreness, PRs, skipped meals, injuries)
 - Their current phase/goals from the spec
 - Progressive overload: increment weights/volume based on recent performance
-- If it's a rest day, create a recovery/nutrition-focused card instead
+- Nutrition to support their training (meals, macros, grocery needs)
 
 ## Rules
 - Be specific to THEIR program — exercises, weights, sets, reps, rest periods
 - Include warm-up guidance if relevant
-- The coach_message should be conversational and specific (not generic motivation)
+- The exercise comment should be conversational and specific (not generic motivation)
+- Nutrition checklist items should be actionable (meals to eat, items to buy)
 - If the spec is empty, introduce yourself and ask what they're working on
-- exercises array should be short labels for the checklist (e.g. "Bench Press 4x8 @ 185")
+- On rest days, skip the exercise card (set to null) but still provide nutrition
+- Either card can be null if not applicable
 
 ## Output
 Respond with JSON only:
 {{
-    "card_title": "{day_of_week}, {date_str} — [Focus Area]",
-    "regimen": "full markdown workout description for the card body",
-    "exercises": ["exercise checklist items"],
-    "coach_message": "motivational/contextual comment to post on the card",
+    "exercise": {{
+        "title": "{day_of_week}, {date_str} — [Focus Area]",
+        "description": "full markdown workout description",
+        "checklist": ["exercise checklist items like 'Bench Press 4x8 @ 185'"],
+        "comment": "conversational coach message"
+    }},
+    "nutrition": {{
+        "title": "{day_of_week}, {date_str} — Nutrition",
+        "description": "meal plan / nutrition notes in markdown",
+        "checklist": ["actionable items like 'Meal 1: Oatmeal + whey (40g protein)'"]
+    }},
     "spec_updates": null or "the COMPLETE updated spec markdown if anything needs changing"
-}}"""
+}}
+Either "exercise" or "nutrition" can be null if not applicable for today."""
 
     response = llm.invoke(prompt)
     return _parse_json_response(response.content)
 
 
-def generate_reply(spec, card_context, user_comment, card_name):
+def generate_reply(spec, board_context, card_context, user_comment, card_name):
     """Process user comment and generate reply + optional spec updates."""
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set")
 
-    llm = ChatAnthropic(model=MODEL, api_key=api_key, max_tokens=4000)
+    llm = ChatAnthropic(model=MODEL, api_key=api_key, max_tokens=8000)
 
     now_ct = datetime.now(tz=CT)
     day_of_week = now_ct.strftime("%A")
@@ -316,10 +340,19 @@ Your client just commented on a card. Read their message and respond helpfully.
 
 Today is {day_of_week}.
 
+## Board Structure
+The board has three lists:
+- **Exercise** — workout cards (one per session)
+- **Nutrition** — meal plans, grocery lists, supplement tracking
+- **Forum** — ongoing discussion topics
+
 ## Client Spec (board description)
 {spec or "(No spec yet)"}
 
-## Card Context (card: {card_name})
+## Full Board Activity (all cards and conversations)
+{board_context or "(No board history yet)"}
+
+## Current Card Context (card: {card_name})
 {card_context or "(No prior conversation on this card)"}
 
 ## New Comment from Client
@@ -337,8 +370,6 @@ Today is {day_of_week}.
 - If they ask a question, give a direct answer then brief explanation
 - If they share a concern (injury, plateau, motivation), address it with empathy and a plan
 - Update the spec with ANY new information they share — this is your memory
-- No length constraints — be as detailed as needed
-
 ## Output
 Respond with JSON only:
 {{
@@ -353,8 +384,33 @@ Respond with JSON only:
 # --- Handlers ---
 
 
+def _create_card_with_checklist(trello, trace_id, list_name, card_data):
+    """Create a card with optional checklist and comment."""
+    list_id = trello.get_list_id(list_name)
+    card = trello.create_card(list_id, card_data["title"], card_data.get("description", ""))
+    log_structured(trace_id, f"create_{list_name.lower()}_card", metadata={"card_id": card["id"]})
+
+    checklist_items = card_data.get("checklist", [])
+    if checklist_items:
+        checklist = trello.create_checklist(card["id"])
+        for item in checklist_items:
+            trello.add_checklist_item(checklist["id"], item)
+        log_structured(trace_id, f"create_{list_name.lower()}_checklist", metadata={
+            "items": len(checklist_items),
+        })
+
+    comment = card_data.get("comment", "")
+    if comment:
+        trello.add_comment(card["id"], comment)
+        log_structured(trace_id, f"add_{list_name.lower()}_comment", metadata={
+            "length": len(comment),
+        })
+
+    return card
+
+
 def handle_morning(trace_id):
-    """Generate and post the daily morning regimen card."""
+    """Generate and post daily exercise and nutrition cards."""
     trello = TrelloClient()
 
     spec = trello.get_board_desc()
@@ -363,52 +419,26 @@ def handle_morning(trace_id):
     board_context = read_board_context(trello)
     log_structured(trace_id, "read_context", metadata={"length": len(board_context)})
 
-    # Move any Active cards to Log
+    # Generate cards
     try:
-        active_list_id = trello.get_list_id("Active")
-        log_list_id = trello.get_list_id("Log")
-        cards = trello.get_cards()
-        for card in cards:
-            if card.get("idList") == active_list_id:
-                trello.move_card(card["id"], log_list_id)
-                log_structured(trace_id, "archive_card", metadata={"card": card["name"]})
-    except ValueError:
-        # Lists don't exist yet — will be handled by card creation
-        active_list_id = None
-        log_list_id = None
-
-    # Generate regimen
-    try:
-        result = generate_morning_regimen(spec, board_context)
+        result = generate_morning_cards(spec, board_context)
     except Exception as e:
         logger.error(f"[{trace_id}] Morning generation failed: {e}", exc_info=True)
         log_structured(trace_id, "generate_morning", "failure", {"error": str(e)})
         sys.exit(1)
 
     log_structured(trace_id, "generate_morning", metadata={
-        "title": result.get("card_title", "")[:80],
+        "has_exercise": result.get("exercise") is not None,
+        "has_nutrition": result.get("nutrition") is not None,
     })
 
-    # Create card
-    if not active_list_id:
-        active_list_id = trello.get_list_id("Active")
+    # Create exercise card
+    if result.get("exercise"):
+        _create_card_with_checklist(trello, trace_id, "Exercise", result["exercise"])
 
-    card = trello.create_card(active_list_id, result["card_title"], result.get("regimen", ""))
-    log_structured(trace_id, "create_card", metadata={"card_id": card["id"]})
-
-    # Create exercise checklist
-    exercises = result.get("exercises", [])
-    if exercises:
-        checklist = trello.create_checklist(card["id"])
-        for exercise in exercises:
-            trello.add_checklist_item(checklist["id"], exercise)
-        log_structured(trace_id, "create_checklist", metadata={"items": len(exercises)})
-
-    # Post coach comment
-    coach_message = result.get("coach_message", "")
-    if coach_message:
-        trello.add_comment(card["id"], coach_message)
-        log_structured(trace_id, "add_comment", metadata={"length": len(coach_message)})
+    # Create nutrition card
+    if result.get("nutrition"):
+        _create_card_with_checklist(trello, trace_id, "Nutrition", result["nutrition"])
 
     # Update spec if needed
     if result.get("spec_updates"):
@@ -430,17 +460,19 @@ def handle_reply(trace_id):
     spec = trello.get_board_desc()
     log_structured(trace_id, "read_spec", metadata={"length": len(spec)})
 
+    board_context = read_board_context(trello)
     card_context = read_card_context(trello, card_id)
     card = trello.get_card(card_id)
     card_name = card.get("name", "Unknown")
     log_structured(trace_id, "read_context", metadata={
         "card": card_name[:80],
-        "length": len(card_context),
+        "board_length": len(board_context),
+        "card_length": len(card_context),
     })
 
     # Generate reply
     try:
-        result = generate_reply(spec, card_context, comment_text, card_name)
+        result = generate_reply(spec, board_context, card_context, comment_text, card_name)
     except Exception as e:
         logger.error(f"[{trace_id}] Reply generation failed: {e}", exc_info=True)
         log_structured(trace_id, "generate_reply", "failure", {"error": str(e)})
