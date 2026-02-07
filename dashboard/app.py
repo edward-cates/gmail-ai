@@ -29,8 +29,8 @@ def _utc_to_ct(iso_str: str, fmt: str = "datetime") -> str:
             dt = dt.replace(tzinfo=UTC)
         ct = dt.astimezone(CT)
         if fmt == "time":
-            return ct.strftime("%H:%M:%S")
-        return ct.strftime("%Y-%m-%d %H:%M:%S")
+            return ct.strftime("%-I:%M:%S %p").lower()
+        return ct.strftime("%a %b %-d %-I:%M %p").lower()
     except (ValueError, TypeError):
         return iso_str[:19].replace("T", " ")
 

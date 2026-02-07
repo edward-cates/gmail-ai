@@ -196,6 +196,109 @@ class TestGenerateReply:
         assert "225" in result["spec_update_instruction"]
 
 
+class TestApplySpecUpdate:
+    """Tests for apply_spec_update() — Haiku-based spec editing."""
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.object(coach, "ChatAnthropic")
+    def test_applies_instruction(self, mock_cls):
+        mock_llm = MagicMock()
+        mock_cls.return_value = mock_llm
+        mock_llm.invoke.return_value = MagicMock(
+            content="# Spec\n## PRs\n- Squat: 225x5x5"
+        )
+
+        result = coach.apply_spec_update("# Spec\n## PRs\n- Squat: 205x5x5", "Update squat PR to 225x5x5")
+        assert result == "# Spec\n## PRs\n- Squat: 225x5x5"
+        assert mock_cls.call_args[1]["model"] == "claude-haiku-4-5-20251001"
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.object(coach, "ChatAnthropic")
+    def test_strips_whitespace(self, mock_cls):
+        mock_llm = MagicMock()
+        mock_cls.return_value = mock_llm
+        mock_llm.invoke.return_value = MagicMock(content="  # Spec\nUpdated  \n")
+
+        result = coach.apply_spec_update("# Spec", "some update")
+        assert result == "# Spec\nUpdated"
+
+
+class TestExecuteActions:
+    """Tests for _execute_actions()."""
+
+    def test_check_item(self):
+        mock_trello = MagicMock()
+        coach._execute_actions(mock_trello, "t1", [
+            {"action": "check_item", "card_id": "c1", "item_id": "i1"},
+        ])
+        mock_trello.set_check_item_state.assert_called_once_with("c1", "i1", "complete")
+
+    def test_uncheck_item(self):
+        mock_trello = MagicMock()
+        coach._execute_actions(mock_trello, "t1", [
+            {"action": "uncheck_item", "card_id": "c1", "item_id": "i1"},
+        ])
+        mock_trello.set_check_item_state.assert_called_once_with("c1", "i1", "incomplete")
+
+    def test_archive_card(self):
+        mock_trello = MagicMock()
+        coach._execute_actions(mock_trello, "t1", [
+            {"action": "archive_card", "card_id": "c1"},
+        ])
+        mock_trello.archive_card.assert_called_once_with("c1")
+
+    def test_move_card(self):
+        mock_trello = MagicMock()
+        mock_trello.get_list_id.return_value = "list_exercise"
+        coach._execute_actions(mock_trello, "t1", [
+            {"action": "move_card", "card_id": "c1", "list": "Exercise"},
+        ])
+        mock_trello.move_card.assert_called_once_with("c1", "list_exercise")
+
+    def test_comment(self):
+        mock_trello = MagicMock()
+        coach._execute_actions(mock_trello, "t1", [
+            {"action": "comment", "card_id": "c1", "text": "Great job"},
+        ])
+        mock_trello.add_comment.assert_called_once_with("c1", "Great job")
+
+    def test_update_card(self):
+        mock_trello = MagicMock()
+        coach._execute_actions(mock_trello, "t1", [
+            {"action": "update_card", "card_id": "c1", "name": "New Name", "desc": "New desc"},
+        ])
+        mock_trello.update_card.assert_called_once_with("c1", name="New Name", desc="New desc")
+
+    def test_multiple_actions(self):
+        mock_trello = MagicMock()
+        mock_trello.get_list_id.return_value = "list_forum"
+        coach._execute_actions(mock_trello, "t1", [
+            {"action": "check_item", "card_id": "c1", "item_id": "i1"},
+            {"action": "archive_card", "card_id": "c2"},
+            {"action": "move_card", "card_id": "c3", "list": "Forum"},
+        ])
+        mock_trello.set_check_item_state.assert_called_once()
+        mock_trello.archive_card.assert_called_once_with("c2")
+        mock_trello.move_card.assert_called_once_with("c3", "list_forum")
+
+    def test_action_failure_continues(self):
+        mock_trello = MagicMock()
+        mock_trello.archive_card.side_effect = Exception("API error")
+        # Should not raise — logs error and continues
+        coach._execute_actions(mock_trello, "t1", [
+            {"action": "archive_card", "card_id": "c1"},
+            {"action": "check_item", "card_id": "c2", "item_id": "i1"},
+        ])
+        # Second action still executed despite first failing
+        mock_trello.set_check_item_state.assert_called_once()
+
+    def test_empty_actions(self):
+        mock_trello = MagicMock()
+        coach._execute_actions(mock_trello, "t1", [])
+        # No Trello calls made
+        mock_trello.assert_not_called()
+
+
 class TestHandleMorning:
     """Tests for handle_morning()."""
 
