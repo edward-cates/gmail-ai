@@ -114,7 +114,8 @@ def _process_email(
             return
 
         # Skip emails from this app (subject starts with 🤖)
-        if subject.startswith("🤖"):
+        # Exception: "🤖 Axios" newsletters happen to use the same emoji
+        if subject.startswith("🤖") and not subject.startswith("🤖 Axios"):
             _log_structured(trace_id, email_id, "skip", "success", {"reason": "app_email", "subject": subject})
             return
 
