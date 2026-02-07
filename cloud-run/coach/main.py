@@ -692,16 +692,15 @@ def handle_reply(trace_id):
         reply_text = result["message"]
         log_structured(trace_id, "generate_reply", metadata={"length": len(reply_text)})
 
-        # Post reply
-        trello.add_comment(card_id, reply_text)
+        # Post reply and react to it
+        reply_action = trello.add_comment(card_id, reply_text)
         log_structured(trace_id, "add_comment", metadata={"length": len(reply_text)})
-
-        # React to the user's comment with ✅ to signal the coach has responded
-        if action_id:
-            try:
-                trello.add_reaction(action_id, "white_check_mark")
-            except Exception:
-                pass  # Non-critical
+        try:
+            reply_action_id = reply_action.get("id", "")
+            if reply_action_id:
+                trello.add_reaction(reply_action_id, "muscle")
+        except Exception:
+            pass  # Non-critical
 
         # Execute board actions (skip comment actions on the reply card to avoid duplicates)
         actions = [
@@ -712,6 +711,13 @@ def handle_reply(trace_id):
 
         # Update spec if needed
         _apply_spec_if_needed(trello, trace_id, spec, result.get("spec_update_instruction"))
+
+        # React ✅ on user's comment as the very last step — signals job complete
+        if action_id:
+            try:
+                trello.add_reaction(action_id, "white_check_mark")
+            except Exception:
+                pass  # Non-critical
 
     except Exception as e:
         logger.error(f"[{trace_id}] Reply handler failed: {e}", exc_info=True)
