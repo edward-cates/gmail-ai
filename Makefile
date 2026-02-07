@@ -408,6 +408,7 @@ deploy-coach-morning-trigger:
 		--source=. \
 		--entry-point=trigger_coach_morning_http \
 		--trigger-http \
+		--allow-unauthenticated \
 		--timeout=60s \
 		--memory=256Mi \
 		--project=$(PROJECT_ID) \
