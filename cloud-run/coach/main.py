@@ -143,7 +143,10 @@ class TrelloClient:
         The marker lets the webhook handler distinguish coach comments
         from user comments (both come from the same Trello account).
         """
-        prefixed = f"**[Coach]** {text}"
+        # Strip any existing prefix to avoid duplication (Claude may echo it from context)
+        if text.startswith(COACH_PREFIX):
+            text = text[len(COACH_PREFIX):].lstrip()
+        prefixed = f"{COACH_PREFIX} {text}"
         r = requests.post(
             f"{self.BASE_URL}/cards/{card_id}/actions/comments",
             params=self._params(text=prefixed),
