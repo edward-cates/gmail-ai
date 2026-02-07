@@ -145,6 +145,7 @@ class TrelloClient:
 
         The marker lets the webhook handler distinguish coach comments
         from user comments (both come from the same Trello account).
+        Uses POST body instead of query params to avoid URL length limits.
         """
         # Strip any existing prefix to avoid duplication (Claude may echo it from context)
         if text.startswith(COACH_PREFIX):
@@ -152,7 +153,8 @@ class TrelloClient:
         prefixed = f"{COACH_PREFIX} {text}"
         r = requests.post(
             f"{self.BASE_URL}/cards/{card_id}/actions/comments",
-            params=self._params(text=prefixed),
+            params=self._params(),
+            data={"text": prefixed},
         )
         r.raise_for_status()
         return r.json()
@@ -640,8 +642,12 @@ def handle_reply(trace_id):
     log_structured(trace_id, "generate_reply", metadata={"length": len(reply_text)})
 
     # Post reply
-    trello.add_comment(card_id, reply_text)
-    log_structured(trace_id, "add_comment", metadata={"length": len(reply_text)})
+    try:
+        trello.add_comment(card_id, reply_text)
+        log_structured(trace_id, "add_comment", metadata={"length": len(reply_text)})
+    except Exception as e:
+        logger.error(f"[{trace_id}] Failed to post comment: {e}", exc_info=True)
+        log_structured(trace_id, "add_comment", "failure", {"error": str(e)})
 
     # Execute board actions
     _execute_actions(trello, trace_id, result.get("actions", []))
