@@ -74,7 +74,8 @@ class TrelloClient:
         """Update the board description."""
         r = requests.put(
             f"{self.BASE_URL}/boards/{self.board_id}",
-            params=self._params(desc=desc),
+            params=self._params(),
+            data={"desc": desc},
         )
         r.raise_for_status()
         return r.json()
@@ -126,8 +127,11 @@ class TrelloClient:
 
     def create_card(self, list_id, name, desc=""):
         """Create a new card."""
-        params = self._params(idList=list_id, name=name, desc=desc, pos="top")
-        r = requests.post(f"{self.BASE_URL}/cards", params=params)
+        r = requests.post(
+            f"{self.BASE_URL}/cards",
+            params=self._params(idList=list_id, pos="top"),
+            data={"name": name, "desc": desc},
+        )
         r.raise_for_status()
         return r.json()
 
@@ -190,7 +194,8 @@ class TrelloClient:
         """Update card fields (name, desc, etc.)."""
         r = requests.put(
             f"{self.BASE_URL}/cards/{card_id}",
-            params=self._params(**fields),
+            params=self._params(),
+            data=fields,
         )
         r.raise_for_status()
         return r.json()
