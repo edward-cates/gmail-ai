@@ -50,9 +50,9 @@ class TestHandleTrelloWebhook:
         assert status == 200
         assert body["skipped"] == "own_comment"
 
-    @patch.dict("os.environ", {"TRELLO_COACH_BOARD_ID": "expected_board"})
+    @patch("functions.coach_handler._resolve_board_id", return_value="expected_board")
     @patch("functions.coach_handler._get_coach_member_id", return_value="coach123")
-    def test_wrong_board_skipped(self, _mock_id):
+    def test_wrong_board_skipped(self, _mock_id, _mock_board):
         req = _make_request(json_data={
             "action": {
                 "type": "commentCard",
@@ -68,10 +68,10 @@ class TestHandleTrelloWebhook:
         assert status == 200
         assert body["skipped"] == "wrong_board"
 
-    @patch.dict("os.environ", {"TRELLO_COACH_BOARD_ID": "board1"})
+    @patch("functions.coach_handler._resolve_board_id", return_value="board1")
     @patch("functions.coach_handler._trigger_coach_job")
     @patch("functions.coach_handler._get_coach_member_id", return_value="coach123")
-    def test_valid_comment_triggers_job(self, _mock_id, mock_trigger):
+    def test_valid_comment_triggers_job(self, _mock_id, mock_trigger, _mock_board):
         req = _make_request(json_data={
             "action": {
                 "type": "commentCard",

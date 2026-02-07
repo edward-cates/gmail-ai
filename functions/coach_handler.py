@@ -18,6 +18,7 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
 _coach_member_id = None
+_resolved_board_id = None
 
 
 def _log_structured(trace_id, stage, result="success", metadata=None):
@@ -31,6 +32,44 @@ def _log_structured(trace_id, stage, result="success", metadata=None):
     if metadata:
         log_data["metadata"] = metadata
     print(json.dumps(log_data), flush=True)
+
+
+def _resolve_board_id():
+    """Resolve the short board ID to a full ID (cached).
+
+    Trello webhooks send the full 24-char hex board ID, but the env var
+    may contain the short URL slug (e.g. 'IrsYdZHV'). Resolve once.
+    """
+    global _resolved_board_id  # noqa: PLW0603
+    if _resolved_board_id:
+        return _resolved_board_id
+
+    short_id = os.getenv("TRELLO_COACH_BOARD_ID", "")
+    if not short_id:
+        return ""
+
+    # Already a full ID (24 hex chars)?
+    if len(short_id) == 24:
+        _resolved_board_id = short_id
+        return _resolved_board_id
+
+    api_key = os.getenv("TRELLO_API_KEY", "")
+    token = os.getenv("TRELLO_TOKEN", "")
+    if not api_key or not token:
+        return short_id
+
+    try:
+        r = requests.get(
+            f"https://api.trello.com/1/boards/{short_id}",
+            params={"key": api_key, "token": token, "fields": "id"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        _resolved_board_id = r.json()["id"]
+        return _resolved_board_id
+    except Exception as e:
+        logger.error(f"Failed to resolve board ID: {e}")
+        return short_id
 
 
 def _get_coach_member_id():
@@ -130,7 +169,7 @@ def handle_trello_webhook(request):
 
     # Verify the action is on our expected board
     board_id = action.get("data", {}).get("board", {}).get("id", "")
-    expected_board = os.getenv("TRELLO_COACH_BOARD_ID", "")
+    expected_board = _resolve_board_id()
     if expected_board and board_id != expected_board:
         return ({"ok": True, "skipped": "wrong_board"}, 200)
 
