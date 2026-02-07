@@ -575,40 +575,40 @@ def _create_card_with_checklist(trello, trace_id, list_name, card_data):
 
 def handle_morning(trace_id):
     """Generate and post daily exercise and nutrition cards."""
-    trello = TrelloClient()
-
-    spec = trello.get_board_desc()
-    log_structured(trace_id, "read_spec", metadata={"length": len(spec)})
-
-    board_context = read_board_context(trello)
-    log_structured(trace_id, "read_context", metadata={"length": len(board_context)})
-
-    # Generate cards
     try:
+        trello = TrelloClient()
+
+        spec = trello.get_board_desc()
+        log_structured(trace_id, "read_spec", metadata={"length": len(spec)})
+
+        board_context = read_board_context(trello)
+        log_structured(trace_id, "read_context", metadata={"length": len(board_context)})
+
         result = generate_morning_cards(spec, board_context)
+
+        log_structured(trace_id, "generate_morning", metadata={
+            "has_exercise": result.get("exercise") is not None,
+            "has_nutrition": result.get("nutrition") is not None,
+        })
+
+        # Create exercise card
+        if result.get("exercise"):
+            _create_card_with_checklist(trello, trace_id, "Exercise", result["exercise"])
+
+        # Create nutrition card
+        if result.get("nutrition"):
+            _create_card_with_checklist(trello, trace_id, "Nutrition", result["nutrition"])
+
+        # Execute board actions
+        _execute_actions(trello, trace_id, result.get("actions", []))
+
+        # Update spec if needed
+        _apply_spec_if_needed(trello, trace_id, spec, result.get("spec_update_instruction"))
+
     except Exception as e:
-        logger.error(f"[{trace_id}] Morning generation failed: {e}", exc_info=True)
-        log_structured(trace_id, "generate_morning", "failure", {"error": str(e)})
+        logger.error(f"[{trace_id}] Morning handler failed: {e}", exc_info=True)
+        log_structured(trace_id, "handle_morning", "failure", {"error": str(e)})
         sys.exit(1)
-
-    log_structured(trace_id, "generate_morning", metadata={
-        "has_exercise": result.get("exercise") is not None,
-        "has_nutrition": result.get("nutrition") is not None,
-    })
-
-    # Create exercise card
-    if result.get("exercise"):
-        _create_card_with_checklist(trello, trace_id, "Exercise", result["exercise"])
-
-    # Create nutrition card
-    if result.get("nutrition"):
-        _create_card_with_checklist(trello, trace_id, "Nutrition", result["nutrition"])
-
-    # Execute board actions
-    _execute_actions(trello, trace_id, result.get("actions", []))
-
-    # Update spec if needed
-    _apply_spec_if_needed(trello, trace_id, spec, result.get("spec_update_instruction"))
 
 
 def handle_reply(trace_id):
@@ -620,45 +620,41 @@ def handle_reply(trace_id):
         log_structured(trace_id, "skip", metadata={"reason": "missing comment_text or card_id"})
         return
 
-    trello = TrelloClient()
-
-    spec = trello.get_board_desc()
-    log_structured(trace_id, "read_spec", metadata={"length": len(spec)})
-
-    board_context = read_board_context(trello)
-    card_context = read_card_context(trello, card_id)
-    card = trello.get_card(card_id)
-    card_name = card.get("name", "Unknown")
-    log_structured(trace_id, "read_context", metadata={
-        "card": card_name[:80],
-        "board_length": len(board_context),
-        "card_length": len(card_context),
-    })
-
-    # Generate reply
     try:
+        trello = TrelloClient()
+
+        spec = trello.get_board_desc()
+        log_structured(trace_id, "read_spec", metadata={"length": len(spec)})
+
+        board_context = read_board_context(trello)
+        card_context = read_card_context(trello, card_id)
+        card = trello.get_card(card_id)
+        card_name = card.get("name", "Unknown")
+        log_structured(trace_id, "read_context", metadata={
+            "card": card_name[:80],
+            "board_length": len(board_context),
+            "card_length": len(card_context),
+        })
+
         result = generate_reply(spec, board_context, card_context, comment_text, card_name)
-    except Exception as e:
-        logger.error(f"[{trace_id}] Reply generation failed: {e}", exc_info=True)
-        log_structured(trace_id, "generate_reply", "failure", {"error": str(e)})
-        sys.exit(1)
 
-    reply_text = result["message"]
-    log_structured(trace_id, "generate_reply", metadata={"length": len(reply_text)})
+        reply_text = result["message"]
+        log_structured(trace_id, "generate_reply", metadata={"length": len(reply_text)})
 
-    # Post reply
-    try:
+        # Post reply
         trello.add_comment(card_id, reply_text)
         log_structured(trace_id, "add_comment", metadata={"length": len(reply_text)})
+
+        # Execute board actions
+        _execute_actions(trello, trace_id, result.get("actions", []))
+
+        # Update spec if needed
+        _apply_spec_if_needed(trello, trace_id, spec, result.get("spec_update_instruction"))
+
     except Exception as e:
-        logger.error(f"[{trace_id}] Failed to post comment: {e}", exc_info=True)
-        log_structured(trace_id, "add_comment", "failure", {"error": str(e)})
-
-    # Execute board actions
-    _execute_actions(trello, trace_id, result.get("actions", []))
-
-    # Update spec if needed
-    _apply_spec_if_needed(trello, trace_id, spec, result.get("spec_update_instruction"))
+        logger.error(f"[{trace_id}] Reply handler failed: {e}", exc_info=True)
+        log_structured(trace_id, "handle_reply", "failure", {"error": str(e)})
+        sys.exit(1)
 
 
 def main():
