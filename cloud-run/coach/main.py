@@ -366,7 +366,7 @@ Today is {day_of_week}, {date_str}.
 The board has three lists:
 - **Exercise** — one card per workout (title, full routine in description, checklist of exercises)
 - **Nutrition** — cards for meals, grocery runs, supplements (title, description, checklist of items)
-- **Forum** — ongoing discussion topics (you don't create these in the morning routine)
+- **Forum** — daily check-in card for open conversation throughout the day
 
 ## Client Spec (board description — your living knowledge about this client)
 {spec or "(No spec yet — introduce yourself and ask about their goals in the exercise comment)"}
@@ -375,7 +375,7 @@ The board has three lists:
 {board_context or "(First interaction — no history yet)"}
 
 ## Your Task
-Create today's exercise and nutrition cards. Consider:
+Create today's exercise card, nutrition card, and a Forum check-in card. Consider:
 - What day of the week it is (training day vs rest day per their schedule)
 - What happened in recent conversations (soreness, PRs, skipped meals, injuries)
 - Their current phase/goals from the spec
@@ -389,7 +389,9 @@ Create today's exercise and nutrition cards. Consider:
 - Nutrition checklist items should be actionable (meals to eat, items to buy)
 - If the spec is empty, introduce yourself and ask what they're working on
 - On rest days, skip the exercise card (set to null) but still provide nutrition
-- Either card can be null if not applicable
+- The forum card is a daily check-in — open-ended prompt for the client to message throughout the day
+- The forum comment should be conversational: ask how they're feeling, follow up on yesterday, etc.
+- Exercise or nutrition can be null if not applicable; always create a forum card
 
 ## Board Actions
 You can take actions on existing cards. Available actions:
@@ -415,10 +417,15 @@ Respond with JSON only:
         "description": "meal plan / nutrition notes in markdown",
         "checklist": ["actionable items like 'Meal 1: Oatmeal + whey (40g protein)'"]
     }},
+    "forum": {{
+        "title": "{day_of_week}, {date_str} — Check In",
+        "description": "",
+        "comment": "conversational check-in message"
+    }},
     "actions": [],
     "spec_update_instruction": null or "brief description of what to change in the spec"
 }}
-Either "exercise" or "nutrition" can be null if not applicable for today.
+Either "exercise" or "nutrition" can be null if not applicable for today. Always include "forum".
 "actions" is an array of board actions to take (can be empty).
 "spec_update_instruction" is a brief description — NOT the full spec."""
 
@@ -608,6 +615,7 @@ def handle_morning(trace_id):
         log_structured(trace_id, "generate_morning", metadata={
             "has_exercise": result.get("exercise") is not None,
             "has_nutrition": result.get("nutrition") is not None,
+            "has_forum": result.get("forum") is not None,
         })
 
         # Create exercise card
@@ -617,6 +625,10 @@ def handle_morning(trace_id):
         # Create nutrition card
         if result.get("nutrition"):
             _create_card_with_checklist(trello, trace_id, "Nutrition", result["nutrition"])
+
+        # Create forum check-in card
+        if result.get("forum"):
+            _create_card_with_checklist(trello, trace_id, "Forum", result["forum"])
 
         # Execute board actions
         _execute_actions(trello, trace_id, result.get("actions", []))

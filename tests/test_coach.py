@@ -360,6 +360,7 @@ class TestHandleMorning:
         mock_trello.create_card.side_effect = [
             {"id": "exercise_card"},
             {"id": "nutrition_card"},
+            {"id": "forum_card"},
         ]
         mock_trello.create_checklist.side_effect = [
             {"id": "cl_exercise"},
@@ -381,6 +382,11 @@ class TestHandleMorning:
                     "description": "## Meals",
                     "checklist": ["Meal 1: Oatmeal + whey"],
                 },
+                "forum": {
+                    "title": "Monday — Check In",
+                    "description": "",
+                    "comment": "How are you feeling today?",
+                },
                 "actions": [],
                 "spec_update_instruction": None,
             })
@@ -388,7 +394,7 @@ class TestHandleMorning:
 
         coach.handle_morning("trace-1")
 
-        assert mock_trello.create_card.call_count == 2
+        assert mock_trello.create_card.call_count == 3
         # Exercise card
         mock_trello.create_card.assert_any_call(
             "list_exercise", "Monday — Push Day", "## Bench\n4x8 @ 185",
@@ -397,8 +403,13 @@ class TestHandleMorning:
         mock_trello.create_card.assert_any_call(
             "list_nutrition", "Monday — Nutrition", "## Meals",
         )
+        # Forum card
+        mock_trello.create_card.assert_any_call(
+            "list_forum", "Monday — Check In", "",
+        )
         assert mock_trello.add_checklist_item.call_count == 3  # 2 exercise + 1 nutrition
-        mock_trello.add_comment.assert_called_once_with("exercise_card", "Time to push!")
+        # Exercise comment + forum comment
+        assert mock_trello.add_comment.call_count == 2
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch.object(coach, "TrelloClient")
