@@ -397,6 +397,7 @@ You can take actions on existing cards. Available actions:
 - {{"action": "move_card", "card_id": "...", "list": "Exercise|Nutrition|Forum"}} — move a card
 - {{"action": "comment", "card_id": "...", "text": "..."}} — comment on an existing card
 - {{"action": "update_card", "card_id": "...", "name": "...", "desc": "..."}} — update card name/desc (both optional)
+- {{"action": "create_card", "list": "Exercise|Nutrition|Forum", "title": "...", "description": "...", "checklist": ["item1", "item2"], "comment": "..."}} — create a new card (description, checklist, comment are optional)
 
 ## Output
 Respond with JSON only:
@@ -471,13 +472,17 @@ The board has three lists:
 - Update the spec with ANY new information they share — this is your memory
 
 ## Board Actions
-You can take actions on existing cards. Available actions:
+You can take actions on existing cards or create new ones. Available actions:
 - {{"action": "archive_card", "card_id": "..."}} — archive a card
 - {{"action": "check_item", "card_id": "...", "item_id": "..."}} — check off a checklist item
 - {{"action": "uncheck_item", "card_id": "...", "item_id": "..."}} — uncheck a checklist item
 - {{"action": "move_card", "card_id": "...", "list": "Exercise|Nutrition|Forum"}} — move a card
 - {{"action": "comment", "card_id": "...", "text": "..."}} — comment on an existing card
 - {{"action": "update_card", "card_id": "...", "name": "...", "desc": "..."}} — update card name/desc (both optional)
+- {{"action": "create_card", "list": "Exercise|Nutrition|Forum", "title": "...", "description": "...", "checklist": ["item1", "item2"], "comment": "..."}} — create a new card (description, checklist, comment are optional)
+
+Use create_card when the client asks for a new workout plan, meal plan, grocery list, or any other card-worthy content.
+For example, if they say "can you make me a leg day card?", create one on the Exercise list.
 
 ## Output
 Respond with JSON only:
@@ -512,6 +517,13 @@ def _execute_actions(trello, trace_id, actions):
                 trello.move_card(action["card_id"], list_id)
             elif action_type == "comment":
                 trello.add_comment(action["card_id"], action["text"])
+            elif action_type == "create_card":
+                _create_card_with_checklist(trello, trace_id, action["list"], {
+                    "title": action["title"],
+                    "description": action.get("description", ""),
+                    "checklist": action.get("checklist", []),
+                    "comment": action.get("comment", ""),
+                })
             elif action_type == "update_card":
                 fields = {}
                 if action.get("name"):

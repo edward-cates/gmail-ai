@@ -369,7 +369,7 @@ deploy-coach:
 	gcloud run jobs deploy coach \
 		--source=cloud-run/coach \
 		--region=$(REGION) \
-		--task-timeout=120s \
+		--task-timeout=300s \
 		--memory=512Mi \
 		--cpu=1 \
 		--max-retries=0 \

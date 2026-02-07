@@ -269,6 +269,40 @@ class TestExecuteActions:
         ])
         mock_trello.update_card.assert_called_once_with("c1", name="New Name", desc="New desc")
 
+    def test_create_card(self):
+        mock_trello = MagicMock()
+        mock_trello.get_list_id.return_value = "list_nutrition"
+        mock_trello.create_card.return_value = {"id": "new_card"}
+        mock_trello.create_checklist.return_value = {"id": "cl_1"}
+        coach._execute_actions(mock_trello, "t1", [
+            {
+                "action": "create_card",
+                "list": "Nutrition",
+                "title": "Grocery Run",
+                "description": "Weekly groceries",
+                "checklist": ["Chicken breast", "Rice", "Broccoli"],
+                "comment": "Stock up!",
+            },
+        ])
+        mock_trello.create_card.assert_called_once_with(
+            "list_nutrition", "Grocery Run", "Weekly groceries",
+        )
+        assert mock_trello.add_checklist_item.call_count == 3
+        mock_trello.add_comment.assert_called_once_with("new_card", "Stock up!")
+
+    def test_create_card_minimal(self):
+        mock_trello = MagicMock()
+        mock_trello.get_list_id.return_value = "list_exercise"
+        mock_trello.create_card.return_value = {"id": "new_card"}
+        coach._execute_actions(mock_trello, "t1", [
+            {"action": "create_card", "list": "Exercise", "title": "Leg Day"},
+        ])
+        mock_trello.create_card.assert_called_once_with(
+            "list_exercise", "Leg Day", "",
+        )
+        mock_trello.create_checklist.assert_not_called()
+        mock_trello.add_comment.assert_not_called()
+
     def test_multiple_actions(self):
         mock_trello = MagicMock()
         mock_trello.get_list_id.return_value = "list_forum"
