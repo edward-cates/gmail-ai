@@ -33,6 +33,7 @@ jobs:
       functions: ${{ steps.filter.outputs.functions }}
       email-processor: ${{ steps.filter.outputs.email-processor }}
       slack-processor: ${{ steps.filter.outputs.slack-processor }}
+      sms-coach: ${{ steps.filter.outputs.sms-coach }}
       unsubscribe-service: ${{ steps.filter.outputs.unsubscribe-service }}
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +48,8 @@ jobs:
               - 'cloud-run/email-processor/**'
             slack-processor:
               - 'cloud-run/slack-processor/**'
+            sms-coach:
+              - 'cloud-run/sms-coach/**'
             unsubscribe-service:
               - 'cloud-run/unsubscribe-service/**'
 
@@ -71,6 +74,8 @@ jobs:
           make deploy-watch-renewal
           make deploy-slack-function
           make deploy-slack-batch-trigger
+          make deploy-sms-function
+          make deploy-sms-morning-trigger
 
   deploy-email-processor:
     needs: [validate, changes]
@@ -107,6 +112,24 @@ jobs:
 
       - name: Deploy slack-processor
         run: make deploy-slack-processor
+
+  deploy-sms-coach:
+    needs: [validate, changes]
+    if: needs.changes.outputs.sms-coach == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy sms-coach
+        run: make deploy-sms-coach
 
   deploy-unsubscribe-service:
     needs: [validate, changes]

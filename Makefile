@@ -1,4 +1,4 @@
-.PHONY: help run-dashboard check-logs check-job-logs check-function-logs deploy-function deploy-function-force deploy-watch-renewal deploy-email-processor deploy-unsubscribe-service deploy-slack-processor deploy-slack-function deploy-slack-batch-trigger test-email-processor test-unsubscribe-service test-slack-processor test-functions test-dashboard test-unit test setup-scheduler setup-slack-scheduler watch-build lint validate delete-trello-cards
+.PHONY: help run-dashboard check-logs check-job-logs check-function-logs deploy-function deploy-function-force deploy-watch-renewal deploy-email-processor deploy-unsubscribe-service deploy-slack-processor deploy-slack-function deploy-slack-batch-trigger deploy-sms-coach deploy-sms-function deploy-sms-morning-trigger setup-sms-scheduler test-email-processor test-unsubscribe-service test-slack-processor test-sms-coach test-functions test-dashboard test-unit test setup-scheduler setup-slack-scheduler watch-build lint validate delete-trello-cards check-sms-logs check-sms-function-logs
 
 PROJECT_ID = neat-simplicity-486023-a4
 PROJECT_NUMBER = 543519381062
@@ -11,8 +11,10 @@ help:
 	@echo "    make deploy                  - Deploy all components"
 	@echo "    make deploy-email-processor  - Deploy email classifier (Cloud Run Job)"
 	@echo "    make deploy-slack-processor  - Deploy Slack→Trello processor (Cloud Run Job)"
+	@echo "    make deploy-sms-coach        - Deploy SMS coach (Cloud Run Job)"
 	@echo "    make deploy-function         - Deploy Pub/Sub handler (Cloud Function)"
 	@echo "    make deploy-slack-function   - Deploy Slack event handler (Cloud Function)"
+	@echo "    make deploy-sms-function     - Deploy SMS webhook handler (Cloud Function)"
 	@echo "    make deploy-watch-renewal    - Deploy watch renewal (Cloud Function)"
 	@echo ""
 	@echo "  TEST:"
@@ -37,7 +39,7 @@ help:
 
 test-functions:
 	@echo "Testing Cloud Function imports..."
-	@uv run python -c "from functions.pubsub_handler import handle_pubsub; from functions.watch_renewal import renew_watch; print('✓ functions imports OK')"
+	@uv run python -c "from functions.pubsub_handler import handle_pubsub; from functions.watch_renewal import renew_watch; from functions.sms_handler import handle_sms; print('✓ functions imports OK')"
 
 test-email-processor:
 	@echo "Testing email-processor syntax..."
@@ -51,6 +53,10 @@ test-slack-processor:
 	@echo "Testing slack-processor syntax..."
 	@uv run python -m py_compile cloud-run/slack-processor/main.py && echo "✓ slack-processor syntax OK"
 
+test-sms-coach:
+	@echo "Testing sms-coach syntax..."
+	@uv run python -m py_compile cloud-run/sms-coach/main.py && echo "✓ sms-coach syntax OK"
+
 test-dashboard:
 	@echo "Testing dashboard imports..."
 	@uv run python -c "from dashboard.app import app; print('✓ dashboard imports OK')"
@@ -59,7 +65,7 @@ test-unit:
 	@echo "Running unit tests..."
 	@uv run pytest tests/ -q
 
-test: test-functions test-email-processor test-unsubscribe-service test-slack-processor test-dashboard test-unit
+test: test-functions test-email-processor test-unsubscribe-service test-slack-processor test-sms-coach test-dashboard test-unit
 	@echo ""
 	@echo "✓ All tests passed!"
 
@@ -127,6 +133,24 @@ check-slack-logs:
 check-slack-function-logs:
 	@echo "Checking Slack handler Cloud Function logs..."
 	@gcloud logging read "resource.type=cloud_function AND resource.labels.function_name=slack-handler" \
+		--limit=20 \
+		--project=$(PROJECT_ID) \
+		--format="table(timestamp,severity,textPayload)" \
+		--freshness=30m \
+		2>&1 | head -30
+
+check-sms-logs:
+	@echo "Checking sms-coach Cloud Run Job logs..."
+	@gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=sms-coach" \
+		--limit=30 \
+		--project=$(PROJECT_ID) \
+		--format="table(timestamp,textPayload)" \
+		--freshness=30m \
+		2>&1 | head -50
+
+check-sms-function-logs:
+	@echo "Checking SMS handler Cloud Function logs..."
+	@gcloud logging read "resource.type=cloud_function AND resource.labels.function_name=sms-handler" \
 		--limit=20 \
 		--project=$(PROJECT_ID) \
 		--format="table(timestamp,severity,textPayload)" \
@@ -241,6 +265,76 @@ deploy-slack-batch-trigger:
 		--project=$(PROJECT_ID) \
 		--set-env-vars="GMAIL_AI_PROJECT_ID=$(PROJECT_ID),GMAIL_AI_LOCATION=$(REGION),GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,SLACK_PROCESSOR_JOB_NAME=slack-processor"
 
+# ============================================================================
+# DEPLOY CLOUD RUN JOB (sms-coach)
+# ============================================================================
+
+deploy-sms-coach:
+	@echo "Deploying sms-coach job..."
+	@SERVICE_ACCOUNT=$$(gcloud iam service-accounts list --project=$(PROJECT_ID) --filter="email:*-compute@developer.gserviceaccount.com" --format="value(email)" | head -1) && \
+	gcloud run jobs deploy sms-coach \
+		--source=cloud-run/sms-coach \
+		--region=$(REGION) \
+		--task-timeout=120s \
+		--memory=512Mi \
+		--cpu=1 \
+		--max-retries=0 \
+		--service-account="$$SERVICE_ACCOUNT" \
+		--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=$(PROJECT_ID)" \
+		--set-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest,TWILIO_ACCOUNT_SID=twilio-account-sid:latest,TWILIO_AUTH_TOKEN=twilio-auth-token:latest,TWILIO_FROM_NUMBER=twilio-from-number:latest,TWILIO_TO_NUMBER=twilio-to-number:latest" \
+		--project=$(PROJECT_ID) && \
+	echo "✓ sms-coach job deployed!"
+
+# ============================================================================
+# DEPLOY CLOUD FUNCTIONS (SMS)
+# ============================================================================
+
+deploy-sms-function:
+	@echo "Deploying SMS webhook handler Cloud Function..."
+	@gcloud functions deploy sms-handler \
+		--gen2 \
+		--runtime=python312 \
+		--region=$(REGION) \
+		--source=. \
+		--entry-point=handle_sms_event \
+		--trigger-http \
+		--allow-unauthenticated \
+		--timeout=30s \
+		--memory=256Mi \
+		--project=$(PROJECT_ID) \
+		--set-env-vars="GMAIL_AI_PROJECT_ID=$(PROJECT_ID),GMAIL_AI_LOCATION=$(REGION),SMS_COACH_JOB_NAME=sms-coach" \
+		--set-secrets="TWILIO_AUTH_TOKEN=twilio-auth-token:latest"
+
+deploy-sms-morning-trigger:
+	@echo "Deploying SMS morning trigger Cloud Function..."
+	@gcloud functions deploy sms-morning-trigger \
+		--gen2 \
+		--runtime=python312 \
+		--region=$(REGION) \
+		--source=. \
+		--entry-point=trigger_sms_morning_http \
+		--trigger-http \
+		--timeout=60s \
+		--memory=256Mi \
+		--project=$(PROJECT_ID) \
+		--set-env-vars="GMAIL_AI_PROJECT_ID=$(PROJECT_ID),GMAIL_AI_LOCATION=$(REGION),SMS_COACH_JOB_NAME=sms-coach"
+
+setup-sms-scheduler:
+	@echo "Setting up SMS morning scheduler (7:00 AM Central daily)..."
+	@FUNCTION_URL=$$(gcloud functions describe sms-morning-trigger --gen2 --region=$(REGION) --project=$(PROJECT_ID) --format="value(serviceConfig.uri)" 2>/dev/null); \
+	if [ -z "$$FUNCTION_URL" ]; then \
+		echo "Error: deploy-sms-morning-trigger first"; exit 1; \
+	fi; \
+	JOB_EXISTS=$$(gcloud scheduler jobs describe sms-morning-coach --location=$(REGION) --project=$(PROJECT_ID) --format="value(name)" 2>/dev/null | wc -l); \
+	if [ "$$JOB_EXISTS" -eq 0 ]; then \
+		gcloud scheduler jobs create http sms-morning-coach \
+			--location=$(REGION) --schedule="0 7 * * *" --uri="$$FUNCTION_URL" \
+			--http-method=GET --time-zone="America/Chicago" --project=$(PROJECT_ID); \
+		echo "✓ SMS morning scheduler created (7 AM Central daily)"; \
+	else \
+		echo "✓ SMS morning scheduler already exists"; \
+	fi
+
 setup-slack-scheduler:
 	@echo "Setting up Slack batch scheduler (every 15 minutes)..."
 	@FUNCTION_URL=$$(gcloud functions describe slack-batch-trigger --gen2 --region=$(REGION) --project=$(PROJECT_ID) --format="value(serviceConfig.uri)" 2>/dev/null); \
@@ -333,7 +427,7 @@ delete-trello-cards:
 # DEPLOY ALL
 # ============================================================================
 
-deploy: deploy-email-processor deploy-slack-processor deploy-function deploy-slack-function deploy-slack-batch-trigger deploy-watch-renewal setup-scheduler setup-slack-scheduler
+deploy: deploy-email-processor deploy-slack-processor deploy-sms-coach deploy-function deploy-slack-function deploy-slack-batch-trigger deploy-sms-function deploy-sms-morning-trigger deploy-watch-renewal setup-scheduler setup-slack-scheduler setup-sms-scheduler
 	@echo ""
 	@echo "✓ All deployed!"
 	@echo "Check logs: make check-logs"

@@ -132,6 +132,49 @@ On parse failure, the first 500 chars of Sonnet's response are logged for debugg
 Raw Slack markup (`<@U123>`, `<#C123>`) is resolved to readable names (`@Alice`, `#general`)
 before classification and Trello display.
 
+## SMS Muscle Growth Coach
+
+### Architecture
+
+```
+Cloud Scheduler (7 AM CT) → Cloud Function → Cloud Run Job (sms-coach)
+                                                    ↓
+                                          Read spec → Opus 4.6 → Twilio SMS
+
+Twilio Webhook (inbound SMS) → Cloud Function → Cloud Run Job (sms-coach) [immediate]
+                                                    ↓
+                                          Read spec + history → Opus 4.6
+                                                    ↓
+                                          Update spec → Twilio SMS reply
+```
+
+### Key Differences from Slack Pattern
+
+- **No batching** — inbound SMS triggers job immediately (like email-processor)
+- **Living spec document** — `gs://gmail-ai-logs/sms-coach/spec.md` read/updated each interaction
+- **Conversation history** — `gs://gmail-ai-logs/sms-coach/history.jsonl` stores last 50 messages
+- **Model**: Opus 4.6 for all interactions
+
+### Cloud Functions
+
+- `sms_handler.py: handle_sms()` — Receives Twilio webhook, verifies signature, triggers job
+- `sms_handler.py: trigger_sms_morning()` — Called by Cloud Scheduler, triggers morning text
+
+### Environment Variables
+
+Cloud Functions (SMS):
+- `TWILIO_AUTH_TOKEN` — Verify Twilio webhook signatures (secret)
+- `SMS_COACH_JOB_NAME` — Cloud Run Job name (default: `sms-coach`)
+
+Cloud Run (sms-coach):
+- `ANTHROPIC_API_KEY` — For Claude
+- `TWILIO_ACCOUNT_SID` — Twilio account identifier
+- `TWILIO_AUTH_TOKEN` — Twilio authentication
+- `TWILIO_FROM_NUMBER` — Twilio phone number to send from
+- `TWILIO_TO_NUMBER` — User's phone number
+- `SMS_MODE` — "morning" or "reply" (set via container override)
+- `SMS_BODY` — Inbound message text (reply mode only)
+
 ## Cloud Functions (`functions/`)
 
 - `pubsub_handler.py` — Receives Gmail Watch, triggers email-processor Cloud Run Job
@@ -144,6 +187,7 @@ before classification and Trello display.
 
 - `email-processor/` — Classify emails, summarize newsletters, send summaries
 - `slack-processor/` — Batch classify Slack messages, manage Trello board
+- `sms-coach/` — Muscle growth coaching agent via SMS (Twilio)
 - `unsubscribe-service/` — AI browser automation for unsubscribe pages
 
 ## CI/CD
