@@ -25,6 +25,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-opus-4-6"
+SPEC_MODEL = "claude-haiku-4-5-20251001"
 CT = timezone(timedelta(hours=-6))
 
 
@@ -174,6 +175,42 @@ class TrelloClient:
         r.raise_for_status()
         return r.json()
 
+    def archive_card(self, card_id):
+        """Archive (close) a card."""
+        r = requests.put(
+            f"{self.BASE_URL}/cards/{card_id}",
+            params=self._params(closed="true"),
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def update_card(self, card_id, **fields):
+        """Update card fields (name, desc, etc.)."""
+        r = requests.put(
+            f"{self.BASE_URL}/cards/{card_id}",
+            params=self._params(**fields),
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def get_card_checklists(self, card_id):
+        """Get all checklists on a card with items and states."""
+        r = requests.get(
+            f"{self.BASE_URL}/cards/{card_id}/checklists",
+            params=self._params(),
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def set_check_item_state(self, card_id, check_item_id, state="complete"):
+        """Check or uncheck a checklist item. state: 'complete' or 'incomplete'."""
+        r = requests.put(
+            f"{self.BASE_URL}/cards/{card_id}/checkItem/{check_item_id}",
+            params=self._params(state=state),
+        )
+        r.raise_for_status()
+        return r.json()
+
 
 # --- Context Helpers ---
 
@@ -190,7 +227,7 @@ def read_board_context(trello):
     """Read full board context: all non-archived cards with their comments.
 
     Returns a formatted string with all cards and conversations,
-    including which list each card belongs to.
+    including which list each card belongs to, card IDs, and checklist items.
     """
     cards = trello.get_cards()
 
@@ -201,9 +238,21 @@ def read_board_context(trello):
     lines = []
     for card in cards:
         list_name = list_names.get(card.get("idList"), "Unknown")
-        lines.append(f"### [{list_name}] {card['name']}")
+        lines.append(f"### [{list_name}] {card['name']}  (card_id: {card['id']})")
         if card.get("desc"):
             lines.append(card["desc"][:500])
+
+        # Include checklist items with IDs and states
+        try:
+            checklists = trello.get_card_checklists(card["id"])
+            for cl in checklists:
+                for item in cl.get("checkItems", []):
+                    state = "x" if item.get("state") == "complete" else " "
+                    lines.append(
+                        f"- [{state}] {item['name']}  (item_id: {item['id']})"
+                    )
+        except Exception:
+            pass  # Skip if checklists fail
 
         comments = trello.get_card_comments(card["id"])
         for comment in comments:
@@ -256,6 +305,37 @@ def _parse_json_response(content):
     return json.loads(content)
 
 
+def apply_spec_update(current_spec, instruction):
+    """Apply a spec update instruction using Haiku (fast, cheap).
+
+    The coach describes what to change in plain English; Haiku applies
+    the edit and returns the full updated spec.
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not set")
+
+    llm = ChatAnthropic(model=SPEC_MODEL, api_key=api_key, max_tokens=8000)
+
+    prompt = f"""You are editing a client spec document. Apply the requested changes and return the COMPLETE updated document.
+
+## Current Spec
+{current_spec}
+
+## Requested Changes
+{instruction}
+
+## Rules
+- Return the COMPLETE updated spec (not a diff)
+- Preserve all existing content that isn't being changed
+- Keep the same markdown formatting style
+- Only make the changes described above — nothing else
+- Return ONLY the updated spec text, no commentary or markdown fences"""
+
+    response = llm.invoke(prompt)
+    return response.content.strip()
+
+
 def generate_morning_cards(spec, board_context):
     """Generate daily exercise and nutrition cards."""
     api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -302,6 +382,15 @@ Create today's exercise and nutrition cards. Consider:
 - On rest days, skip the exercise card (set to null) but still provide nutrition
 - Either card can be null if not applicable
 
+## Board Actions
+You can take actions on existing cards. Available actions:
+- {{"action": "archive_card", "card_id": "..."}} — archive a card
+- {{"action": "check_item", "card_id": "...", "item_id": "..."}} — check off a checklist item
+- {{"action": "uncheck_item", "card_id": "...", "item_id": "..."}} — uncheck a checklist item
+- {{"action": "move_card", "card_id": "...", "list": "Exercise|Nutrition|Forum"}} — move a card
+- {{"action": "comment", "card_id": "...", "text": "..."}} — comment on an existing card
+- {{"action": "update_card", "card_id": "...", "name": "...", "desc": "..."}} — update card name/desc (both optional)
+
 ## Output
 Respond with JSON only:
 {{
@@ -316,9 +405,12 @@ Respond with JSON only:
         "description": "meal plan / nutrition notes in markdown",
         "checklist": ["actionable items like 'Meal 1: Oatmeal + whey (40g protein)'"]
     }},
-    "spec_updates": null or "the COMPLETE updated spec markdown if anything needs changing"
+    "actions": [],
+    "spec_update_instruction": null or "brief description of what to change in the spec"
 }}
-Either "exercise" or "nutrition" can be null if not applicable for today."""
+Either "exercise" or "nutrition" can be null if not applicable for today.
+"actions" is an array of board actions to take (can be empty).
+"spec_update_instruction" is a brief description — NOT the full spec."""
 
     response = llm.invoke(prompt)
     return _parse_json_response(response.content)
@@ -370,18 +462,83 @@ The board has three lists:
 - If they ask a question, give a direct answer then brief explanation
 - If they share a concern (injury, plateau, motivation), address it with empathy and a plan
 - Update the spec with ANY new information they share — this is your memory
+
+## Board Actions
+You can take actions on existing cards. Available actions:
+- {{"action": "archive_card", "card_id": "..."}} — archive a card
+- {{"action": "check_item", "card_id": "...", "item_id": "..."}} — check off a checklist item
+- {{"action": "uncheck_item", "card_id": "...", "item_id": "..."}} — uncheck a checklist item
+- {{"action": "move_card", "card_id": "...", "list": "Exercise|Nutrition|Forum"}} — move a card
+- {{"action": "comment", "card_id": "...", "text": "..."}} — comment on an existing card
+- {{"action": "update_card", "card_id": "...", "name": "...", "desc": "..."}} — update card name/desc (both optional)
+
 ## Output
 Respond with JSON only:
 {{
     "message": "your reply comment text",
-    "spec_updates": null or "the COMPLETE updated spec markdown (not a diff)"
-}}"""
+    "actions": [],
+    "spec_update_instruction": null or "brief description of what to change in the spec"
+}}
+"actions" is an array of board actions to take (can be empty).
+"spec_update_instruction" is a brief description — NOT the full spec."""
 
     response = llm.invoke(prompt)
     return _parse_json_response(response.content)
 
 
 # --- Handlers ---
+
+
+def _execute_actions(trello, trace_id, actions):
+    """Execute board actions returned by the coach."""
+    for action in actions:
+        action_type = action.get("action", "")
+        try:
+            if action_type == "archive_card":
+                trello.archive_card(action["card_id"])
+            elif action_type == "check_item":
+                trello.set_check_item_state(action["card_id"], action["item_id"], "complete")
+            elif action_type == "uncheck_item":
+                trello.set_check_item_state(action["card_id"], action["item_id"], "incomplete")
+            elif action_type == "move_card":
+                list_id = trello.get_list_id(action["list"])
+                trello.move_card(action["card_id"], list_id)
+            elif action_type == "comment":
+                trello.add_comment(action["card_id"], action["text"])
+            elif action_type == "update_card":
+                fields = {}
+                if action.get("name"):
+                    fields["name"] = action["name"]
+                if action.get("desc"):
+                    fields["desc"] = action["desc"]
+                if fields:
+                    trello.update_card(action["card_id"], **fields)
+            else:
+                logger.warning(f"[{trace_id}] Unknown action: {action_type}")
+                continue
+            log_structured(trace_id, f"action_{action_type}", metadata={
+                "card_id": action.get("card_id", ""),
+            })
+        except Exception as e:
+            logger.error(f"[{trace_id}] Action {action_type} failed: {e}")
+            log_structured(trace_id, f"action_{action_type}", "failure", {
+                "error": str(e),
+            })
+
+
+def _apply_spec_if_needed(trello, trace_id, spec, instruction):
+    """Apply spec update instruction via Haiku if instruction is provided."""
+    if not instruction:
+        return
+    try:
+        updated_spec = apply_spec_update(spec, instruction)
+        trello.update_board_desc(updated_spec)
+        log_structured(trace_id, "spec_updated", metadata={
+            "instruction": instruction[:120],
+        })
+    except Exception as e:
+        logger.error(f"[{trace_id}] Spec update failed: {e}", exc_info=True)
+        log_structured(trace_id, "spec_updated", "failure", {"error": str(e)})
 
 
 def _create_card_with_checklist(trello, trace_id, list_name, card_data):
@@ -440,10 +597,11 @@ def handle_morning(trace_id):
     if result.get("nutrition"):
         _create_card_with_checklist(trello, trace_id, "Nutrition", result["nutrition"])
 
+    # Execute board actions
+    _execute_actions(trello, trace_id, result.get("actions", []))
+
     # Update spec if needed
-    if result.get("spec_updates"):
-        trello.update_board_desc(result["spec_updates"])
-        log_structured(trace_id, "spec_updated")
+    _apply_spec_if_needed(trello, trace_id, spec, result.get("spec_update_instruction"))
 
 
 def handle_reply(trace_id):
@@ -485,10 +643,11 @@ def handle_reply(trace_id):
     trello.add_comment(card_id, reply_text)
     log_structured(trace_id, "add_comment", metadata={"length": len(reply_text)})
 
+    # Execute board actions
+    _execute_actions(trello, trace_id, result.get("actions", []))
+
     # Update spec if needed
-    if result.get("spec_updates"):
-        trello.update_board_desc(result["spec_updates"])
-        log_structured(trace_id, "spec_updated")
+    _apply_spec_if_needed(trello, trace_id, spec, result.get("spec_update_instruction"))
 
 
 def main():

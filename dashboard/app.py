@@ -3,7 +3,7 @@
 import json
 import os
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -15,6 +15,28 @@ app = FastAPI(title="Gmail AI Dashboard")
 
 templates_dir = os.path.join(os.path.dirname(__file__), "templates")
 templates = Jinja2Templates(directory=templates_dir)
+
+CT = timezone(timedelta(hours=-6))
+
+
+def _utc_to_ct(iso_str: str, fmt: str = "datetime") -> str:
+    """Convert UTC ISO timestamp to Central Time display string."""
+    if not iso_str or len(iso_str) < 19:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        ct = dt.astimezone(CT)
+        if fmt == "time":
+            return ct.strftime("%H:%M:%S")
+        return ct.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return iso_str[:19].replace("T", " ")
+
+
+templates.env.filters["ct_datetime"] = lambda s: _utc_to_ct(s, "datetime")
+templates.env.filters["ct_time"] = lambda s: _utc_to_ct(s, "time")
 
 
 def get_logs_from_cloud_logging(project_id: str, hours: int = 24) -> list[dict]:
