@@ -141,30 +141,71 @@ Cloud Scheduler (7 AM CT) → Cloud Function → Cloud Run Job (coach)
                                                     ↓
                                           Read board desc (spec) + all cards/comments
                                                     ↓
-                                          Opus 4.6 → Create regimen card + checklist
+                                          Opus 4.6 → Create exercise, nutrition, forum cards
+                                                    ↓
+                                          Execute board actions + Haiku spec update
 
-Trello Webhook (comment on card) → Cloud Function → Cloud Run Job (coach) [immediate]
+Trello Webhook (comment on card) → Cloud Function → Cloud Run Job (coach)
                                                           ↓
-                                                Read board desc + card comments → Opus 4.6
+                                                Read board desc + all cards + card comments
                                                           ↓
-                                                Reply comment + update board desc
+                                                Opus 4.6 → Reply comment + board actions
+                                                          ↓
+                                                Haiku → Apply spec update instruction
 ```
+
+### Models
+
+| Model | Role |
+|-------|------|
+| Opus 4.6 | Coaching responses (morning cards, replies, board actions) |
+| Haiku 4.5 | Spec editing (applies brief instruction to full spec) |
+
+Uses the `anthropic` SDK directly (not langchain) for faster container startup.
 
 ### State Management
 
-- **Board description** — Living spec/manifesto (replaces GCS spec.md)
-- **Card comments** — Conversation history (replaces GCS history.jsonl)
-- No GCS state files needed — all state lives in Trello
+- **Board description** — Living spec/manifesto. The coach's ONLY long-term memory. Updated via Haiku after each interaction.
+- **Card comments** — Conversation history. Cards get archived by the user after responses.
+- No GCS state files — all state lives in Trello
 
 ### Board Structure
 
 - Board: `TRELLO_COACH_BOARD_ID`
-- Lists: "Active" (today's card), "Log" (previous days)
-- Morning card: workout regimen in description + exercise checklist + coach comment
+- Three lists:
+  - **Exercise** — one card per workout (description + exercise checklist + coach comment)
+  - **Nutrition** — meal plans, grocery lists, supplements (description + checklist)
+  - **Forum** — daily check-in card for open conversation throughout the day
+
+### Morning Routine
+
+1. Read board desc (spec) + all non-archived cards with comments and checklists
+2. Opus generates: exercise card, nutrition card, forum check-in card, board actions, spec update instruction
+3. Create cards with checklists and comments
+4. Execute board actions (archive old cards, check items, etc.)
+5. If spec update needed: Haiku applies the edit instruction to the full spec
+
+### Reply Flow
+
+1. Read board desc (spec) + full board context + specific card context
+2. Opus generates: reply message, board actions, spec update instruction
+3. Post reply comment (with `**[Coach]**` prefix to distinguish from user)
+4. Execute board actions (can create new cards, archive, check items, etc.)
+5. If spec update needed: Haiku applies the edit instruction to the full spec
+
+### Board Actions
+
+The coach can take these actions on the board:
+- `archive_card` — archive a card
+- `check_item` / `uncheck_item` — toggle checklist items
+- `move_card` — move card between lists
+- `comment` — comment on any card
+- `update_card` — update card name/description
+- `create_card` — create new cards on any list (with optional description, checklist, comment)
 
 ### Cloud Functions
 
-- `coach_handler.py: handle_trello_webhook()` — Receives Trello webhook, filters for commentCard, skips own comments, triggers job
+- `coach_handler.py: handle_trello_webhook()` — Receives Trello webhook, filters for commentCard, skips own comments (checks `**[Coach]**` prefix), triggers job
 - `coach_handler.py: trigger_coach_morning()` — Called by Cloud Scheduler, triggers morning card creation
 
 ### Environment Variables
@@ -184,6 +225,23 @@ Cloud Run (coach):
 - `COMMENT_TEXT` — User's comment text (reply mode only)
 - `CARD_ID` — Card the comment was on (reply mode only)
 
+### Post-Deploy Setup
+
+After deploying the coach components, these one-time steps are needed:
+
+1. **Create Trello board** with three lists: Exercise, Nutrition, Forum
+2. **Set board description** with initial client spec
+3. **Register Trello webhook** (so card comments trigger the coach):
+   ```bash
+   CALLBACK_URL=$(gcloud functions describe coach-webhook-handler --gen2 --region=us-central1 --format="value(serviceConfig.uri)")
+   curl -X POST "https://api.trello.com/1/tokens/${TRELLO_TOKEN}/webhooks/" \
+     -d "callbackURL=${CALLBACK_URL}" \
+     -d "idModel=${TRELLO_COACH_BOARD_ID}" \
+     -d "description=Coach webhook" \
+     -d "key=${TRELLO_API_KEY}"
+   ```
+4. **Set up Cloud Scheduler**: `make setup-coach-scheduler`
+
 ## Cloud Functions (`functions/`)
 
 - `pubsub_handler.py` — Receives Gmail Watch, triggers email-processor Cloud Run Job
@@ -196,7 +254,8 @@ Cloud Run (coach):
 
 - `email-processor/` — Classify emails, summarize newsletters, send summaries
 - `slack-processor/` — Batch classify Slack messages, manage Trello board
-- `sms-coach/` — Muscle growth coaching agent via SMS (Twilio)
+- `coach/` — Muscle growth coaching agent via Trello (Opus 4.6 + Haiku 4.5)
+- `sms-coach/` — Muscle growth coaching agent via SMS (Twilio, deprecated)
 - `unsubscribe-service/` — AI browser automation for unsubscribe pages
 
 ## CI/CD
@@ -207,6 +266,7 @@ GitHub Actions (`.github/workflows/deploy.yml`):
   - `main.py` or `functions/**` → all Cloud Functions
   - `cloud-run/email-processor/**` → email-processor
   - `cloud-run/slack-processor/**` → slack-processor
+  - `cloud-run/coach/**` → coach
   - `cloud-run/unsubscribe-service/**` → unsubscribe-service
 
 Deploy jobs run in parallel after validation passes.
@@ -234,11 +294,15 @@ Cloud Run (slack-processor):
 ## Deploy
 
 ```bash
-make deploy                  # Deploy all
-make deploy-email-processor  # Email classifier
-make deploy-slack-processor  # Slack→Trello processor
-make deploy-function         # Gmail Pub/Sub handler
-make deploy-slack-function   # Slack event handler
+make deploy                      # Deploy all
+make deploy-email-processor      # Email classifier
+make deploy-slack-processor      # Slack→Trello processor
+make deploy-coach                # Trello coach (Cloud Run Job)
+make deploy-coach-webhook        # Coach Trello webhook handler
+make deploy-coach-morning-trigger # Coach morning trigger
+make deploy-function             # Gmail Pub/Sub handler
+make deploy-slack-function       # Slack event handler
+make setup-coach-scheduler       # Set up 7 AM CT daily scheduler
 make check-logs
 ```
 
@@ -248,6 +312,33 @@ make check-logs
 ./scripts/set_batch_interval.sh 5    # every 5 min
 ./scripts/set_batch_interval.sh 15   # every 15 min
 ./scripts/set_batch_interval.sh      # show current
+```
+
+## GCP Project Setup
+
+Prerequisites before first deploy:
+
+```bash
+# Enable required APIs
+gcloud services enable \
+  cloudfunctions.googleapis.com \
+  run.googleapis.com \
+  cloudscheduler.googleapis.com \
+  secretmanager.googleapis.com \
+  logging.googleapis.com \
+  gmail.googleapis.com \
+  cloudbuild.googleapis.com
+
+# Grant Cloud Build permission to deploy Cloud Run
+PROJECT_NUMBER=$(gcloud projects describe $(gcloud config get-value project) --format="value(projectNumber)")
+gcloud projects add-iam-policy-binding $(gcloud config get-value project) \
+  --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+  --role="roles/run.admin"
+
+# Grant default compute SA permission to access secrets
+gcloud projects add-iam-policy-binding $(gcloud config get-value project) \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
 ```
 
 ## Secrets
