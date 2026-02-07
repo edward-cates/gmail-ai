@@ -1,4 +1,4 @@
-.PHONY: help run-dashboard check-logs check-job-logs check-function-logs deploy-function deploy-function-force deploy-watch-renewal deploy-email-processor deploy-unsubscribe-service deploy-slack-processor deploy-slack-function deploy-slack-batch-trigger deploy-sms-coach deploy-sms-function deploy-sms-morning-trigger setup-sms-scheduler test-email-processor test-unsubscribe-service test-slack-processor test-sms-coach test-functions test-dashboard test-unit test setup-scheduler setup-slack-scheduler watch-build lint validate delete-trello-cards check-sms-logs check-sms-function-logs
+.PHONY: help run-dashboard check-logs check-job-logs check-function-logs deploy-function deploy-function-force deploy-watch-renewal deploy-email-processor deploy-unsubscribe-service deploy-slack-processor deploy-slack-function deploy-slack-batch-trigger deploy-sms-coach deploy-sms-function deploy-sms-morning-trigger setup-sms-scheduler deploy-coach deploy-coach-webhook deploy-coach-morning-trigger setup-coach-scheduler test-email-processor test-unsubscribe-service test-slack-processor test-sms-coach test-coach test-functions test-dashboard test-unit test setup-scheduler setup-slack-scheduler watch-build lint validate delete-trello-cards check-sms-logs check-sms-function-logs check-coach-logs check-coach-function-logs
 
 PROJECT_ID = neat-simplicity-486023-a4
 PROJECT_NUMBER = 543519381062
@@ -12,9 +12,11 @@ help:
 	@echo "    make deploy-email-processor  - Deploy email classifier (Cloud Run Job)"
 	@echo "    make deploy-slack-processor  - Deploy Slack→Trello processor (Cloud Run Job)"
 	@echo "    make deploy-sms-coach        - Deploy SMS coach (Cloud Run Job)"
+	@echo "    make deploy-coach            - Deploy Trello coach (Cloud Run Job)"
 	@echo "    make deploy-function         - Deploy Pub/Sub handler (Cloud Function)"
 	@echo "    make deploy-slack-function   - Deploy Slack event handler (Cloud Function)"
 	@echo "    make deploy-sms-function     - Deploy SMS webhook handler (Cloud Function)"
+	@echo "    make deploy-coach-webhook    - Deploy Coach Trello webhook (Cloud Function)"
 	@echo "    make deploy-watch-renewal    - Deploy watch renewal (Cloud Function)"
 	@echo ""
 	@echo "  TEST:"
@@ -39,7 +41,7 @@ help:
 
 test-functions:
 	@echo "Testing Cloud Function imports..."
-	@uv run python -c "from functions.pubsub_handler import handle_pubsub; from functions.watch_renewal import renew_watch; from functions.sms_handler import handle_sms; print('✓ functions imports OK')"
+	@uv run python -c "from functions.pubsub_handler import handle_pubsub; from functions.watch_renewal import renew_watch; from functions.sms_handler import handle_sms; from functions.coach_handler import handle_trello_webhook; print('✓ functions imports OK')"
 
 test-email-processor:
 	@echo "Testing email-processor syntax..."
@@ -57,6 +59,10 @@ test-sms-coach:
 	@echo "Testing sms-coach syntax..."
 	@uv run python -m py_compile cloud-run/sms-coach/main.py && echo "✓ sms-coach syntax OK"
 
+test-coach:
+	@echo "Testing coach syntax..."
+	@uv run python -m py_compile cloud-run/coach/main.py && echo "✓ coach syntax OK"
+
 test-dashboard:
 	@echo "Testing dashboard imports..."
 	@uv run python -c "from dashboard.app import app; print('✓ dashboard imports OK')"
@@ -65,7 +71,7 @@ test-unit:
 	@echo "Running unit tests..."
 	@uv run pytest tests/ -q
 
-test: test-functions test-email-processor test-unsubscribe-service test-slack-processor test-sms-coach test-dashboard test-unit
+test: test-functions test-email-processor test-unsubscribe-service test-slack-processor test-sms-coach test-coach test-dashboard test-unit
 	@echo ""
 	@echo "✓ All tests passed!"
 
@@ -151,6 +157,24 @@ check-sms-logs:
 check-sms-function-logs:
 	@echo "Checking SMS handler Cloud Function logs..."
 	@gcloud logging read "resource.type=cloud_function AND resource.labels.function_name=sms-handler" \
+		--limit=20 \
+		--project=$(PROJECT_ID) \
+		--format="table(timestamp,severity,textPayload)" \
+		--freshness=30m \
+		2>&1 | head -30
+
+check-coach-logs:
+	@echo "Checking coach Cloud Run Job logs..."
+	@gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=coach" \
+		--limit=30 \
+		--project=$(PROJECT_ID) \
+		--format="table(timestamp,textPayload)" \
+		--freshness=30m \
+		2>&1 | head -50
+
+check-coach-function-logs:
+	@echo "Checking coach webhook Cloud Function logs..."
+	@gcloud logging read "resource.type=cloud_function AND resource.labels.function_name=coach-webhook-handler" \
 		--limit=20 \
 		--project=$(PROJECT_ID) \
 		--format="table(timestamp,severity,textPayload)" \
@@ -335,6 +359,76 @@ setup-sms-scheduler:
 		echo "✓ SMS morning scheduler already exists"; \
 	fi
 
+# ============================================================================
+# DEPLOY CLOUD RUN JOB (coach - Trello)
+# ============================================================================
+
+deploy-coach:
+	@echo "Deploying coach job..."
+	@SERVICE_ACCOUNT=$$(gcloud iam service-accounts list --project=$(PROJECT_ID) --filter="email:*-compute@developer.gserviceaccount.com" --format="value(email)" | head -1) && \
+	gcloud run jobs deploy coach \
+		--source=cloud-run/coach \
+		--region=$(REGION) \
+		--task-timeout=120s \
+		--memory=512Mi \
+		--cpu=1 \
+		--max-retries=0 \
+		--service-account="$$SERVICE_ACCOUNT" \
+		--set-env-vars="TRELLO_COACH_BOARD_ID=IrsYdZHV" \
+		--set-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest,TRELLO_API_KEY=trello-api-key:latest,TRELLO_TOKEN=trello-token:latest" \
+		--project=$(PROJECT_ID) && \
+	echo "✓ coach job deployed!"
+
+# ============================================================================
+# DEPLOY CLOUD FUNCTIONS (coach)
+# ============================================================================
+
+deploy-coach-webhook:
+	@echo "Deploying coach Trello webhook Cloud Function..."
+	@gcloud functions deploy coach-webhook-handler \
+		--gen2 \
+		--runtime=python312 \
+		--region=$(REGION) \
+		--source=. \
+		--entry-point=handle_coach_webhook \
+		--trigger-http \
+		--allow-unauthenticated \
+		--timeout=30s \
+		--memory=256Mi \
+		--project=$(PROJECT_ID) \
+		--set-env-vars="GMAIL_AI_PROJECT_ID=$(PROJECT_ID),GMAIL_AI_LOCATION=$(REGION),COACH_JOB_NAME=coach,TRELLO_COACH_BOARD_ID=IrsYdZHV" \
+		--set-secrets="TRELLO_API_KEY=trello-api-key:latest,TRELLO_TOKEN=trello-token:latest"
+
+deploy-coach-morning-trigger:
+	@echo "Deploying coach morning trigger Cloud Function..."
+	@gcloud functions deploy coach-morning-trigger \
+		--gen2 \
+		--runtime=python312 \
+		--region=$(REGION) \
+		--source=. \
+		--entry-point=trigger_coach_morning_http \
+		--trigger-http \
+		--timeout=60s \
+		--memory=256Mi \
+		--project=$(PROJECT_ID) \
+		--set-env-vars="GMAIL_AI_PROJECT_ID=$(PROJECT_ID),GMAIL_AI_LOCATION=$(REGION),COACH_JOB_NAME=coach"
+
+setup-coach-scheduler:
+	@echo "Setting up coach morning scheduler (7:00 AM Central daily)..."
+	@FUNCTION_URL=$$(gcloud functions describe coach-morning-trigger --gen2 --region=$(REGION) --project=$(PROJECT_ID) --format="value(serviceConfig.uri)" 2>/dev/null); \
+	if [ -z "$$FUNCTION_URL" ]; then \
+		echo "Error: deploy-coach-morning-trigger first"; exit 1; \
+	fi; \
+	JOB_EXISTS=$$(gcloud scheduler jobs describe coach-morning --location=$(REGION) --project=$(PROJECT_ID) --format="value(name)" 2>/dev/null | wc -l); \
+	if [ "$$JOB_EXISTS" -eq 0 ]; then \
+		gcloud scheduler jobs create http coach-morning \
+			--location=$(REGION) --schedule="0 7 * * *" --uri="$$FUNCTION_URL" \
+			--http-method=GET --time-zone="America/Chicago" --project=$(PROJECT_ID); \
+		echo "✓ Coach morning scheduler created (7 AM Central daily)"; \
+	else \
+		echo "✓ Coach morning scheduler already exists"; \
+	fi
+
 setup-slack-scheduler:
 	@echo "Setting up Slack batch scheduler (every 15 minutes)..."
 	@FUNCTION_URL=$$(gcloud functions describe slack-batch-trigger --gen2 --region=$(REGION) --project=$(PROJECT_ID) --format="value(serviceConfig.uri)" 2>/dev/null); \
@@ -427,7 +521,7 @@ delete-trello-cards:
 # DEPLOY ALL
 # ============================================================================
 
-deploy: deploy-email-processor deploy-slack-processor deploy-sms-coach deploy-function deploy-slack-function deploy-slack-batch-trigger deploy-sms-function deploy-sms-morning-trigger deploy-watch-renewal setup-scheduler setup-slack-scheduler setup-sms-scheduler
+deploy: deploy-email-processor deploy-slack-processor deploy-sms-coach deploy-coach deploy-function deploy-slack-function deploy-slack-batch-trigger deploy-sms-function deploy-sms-morning-trigger deploy-coach-webhook deploy-coach-morning-trigger deploy-watch-renewal setup-scheduler setup-slack-scheduler setup-sms-scheduler setup-coach-scheduler
 	@echo ""
 	@echo "✓ All deployed!"
 	@echo "Check logs: make check-logs"

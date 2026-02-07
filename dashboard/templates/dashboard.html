@@ -159,6 +159,8 @@
         }
         .badge-email { background: #e3f2fd; color: #1565c0; }
         .badge-slack { background: #f3e5f5; color: #7b1fa2; }
+        .badge-sms { background: #e8f5e9; color: #2e7d32; }
+        .badge-coach { background: #e8f5e9; color: #2e7d32; }
         .badge-success { background: #e8f5e9; color: #2e7d32; }
         .badge-failure { background: #ffebee; color: #c62828; }
         .badge-marketing { background: #fff3e0; color: #e65100; }
@@ -168,6 +170,9 @@
         .badge-needs_response { background: #ffebee; color: #c62828; }
         .badge-action_required { background: #fff3e0; color: #e65100; }
         .badge-worth_reading { background: #e8f5e9; color: #2e7d32; }
+        .badge-noted { background: #f5f5f5; color: #616161; }
+        .badge-morning { background: #fff9c4; color: #f57f17; }
+        .badge-reply { background: #e0f2f1; color: #00695c; }
         .trace-time {
             font-size: 12px;
             color: #999;
@@ -240,6 +245,20 @@
         .stage-batch_classify_done { background: #fff9c4; color: #f57f17; }
         .stage-batch_complete { background: #e8f5e9; color: #2e7d32; }
         .stage-batch_empty { background: #f5f5f5; color: #616161; }
+        .stage-sms_received { background: #e8f5e9; color: #2e7d32; }
+        .stage-morning_trigger { background: #fff9c4; color: #f57f17; }
+        .stage-generate_morning { background: #fff9c4; color: #f57f17; }
+        .stage-generate_reply { background: #e0f2f1; color: #00695c; }
+        .stage-sms_sent { background: #e8f5e9; color: #2e7d32; }
+        .stage-spec_updated { background: #f3e5f5; color: #7b1fa2; }
+        .stage-job_complete { background: #e8f5e9; color: #2e7d32; }
+        .stage-read_spec { background: #e3f2fd; color: #1565c0; }
+        .stage-read_context { background: #e3f2fd; color: #1565c0; }
+        .stage-archive_card { background: #f5f5f5; color: #616161; }
+        .stage-create_card { background: #e8f5e9; color: #2e7d32; }
+        .stage-create_checklist { background: #e8f5e9; color: #2e7d32; }
+        .stage-add_comment { background: #e0f2f1; color: #00695c; }
+        .stage-comment_received { background: #e8f5e9; color: #2e7d32; }
         .log-service {
             font-size: 10px;
             color: #aaa;
@@ -306,6 +325,14 @@
                     <div class="stat-label">Slack</div>
                     <div class="stat-value">{{ slack_count }}</div>
                 </div>
+                <div class="stat">
+                    <div class="stat-label">SMS</div>
+                    <div class="stat-value">{{ sms_count }}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Coach</div>
+                    <div class="stat-value">{{ coach_count }}</div>
+                </div>
                 {% if failure_count > 0 %}
                 <div class="stat" style="background: #ffebee;">
                     <div class="stat-label">Failures</div>
@@ -318,6 +345,8 @@
                     <button class="filter-btn active" data-filter="all">All</button>
                     <button class="filter-btn" data-filter="email">Email</button>
                     <button class="filter-btn" data-filter="slack">Slack</button>
+                    <button class="filter-btn" data-filter="sms">SMS</button>
+                    <button class="filter-btn" data-filter="coach">Coach</button>
                 </div>
                 <button class="refresh-btn" onclick="location.reload()">Refresh</button>
             </div>
@@ -328,9 +357,12 @@
             <details class="trace-group" data-pipeline="{{ group.summary.pipeline }}">
                 <summary class="trace-summary">
                     <span class="trace-expand">&#9654;</span>
-                    <span class="trace-title">{% if group.summary.pipeline == 'slack' %}&#x1F4AC;{% elif group.summary.pipeline == 'email' %}&#x2709;&#xFE0F;{% endif %} {{ group.summary.title }}</span>
+                    <span class="trace-title">{% if group.summary.pipeline == 'coach' %}&#x1F4AA;{% elif group.summary.pipeline == 'sms' %}&#x1F4F1;{% elif group.summary.pipeline == 'slack' %}&#x1F4AC;{% elif group.summary.pipeline == 'email' %}&#x2709;&#xFE0F;{% endif %} {{ group.summary.title }}</span>
                     <span class="trace-badges">
                         <span class="badge badge-{{ group.summary.pipeline }}">{{ group.summary.pipeline }}</span>
+                        {% if group.summary.sms_mode %}
+                        <span class="badge badge-{{ group.summary.sms_mode }}">{{ group.summary.sms_mode }}</span>
+                        {% endif %}
                         {% if group.summary.category %}
                         <span class="badge badge-{{ group.summary.category }}">{{ group.summary.category }}</span>
                         {% endif %}
@@ -377,6 +409,12 @@
                                     queued → {{ entry.metadata.blob }}
                                 {% elif entry.metadata and entry.metadata.channel %}
                                     #{{ entry.metadata.channel }}
+                                {% elif entry.metadata and entry.metadata.sid %}
+                                    sent ({{ entry.metadata.length }} chars)
+                                {% elif entry.metadata and entry.metadata.length is defined %}
+                                    {{ entry.metadata.length }} chars
+                                {% elif entry.metadata and entry.metadata.mode %}
+                                    mode: {{ entry.metadata.mode }}
                                 {% elif entry.metadata and entry.metadata.error %}
                                     {{ entry.metadata.error[:80] }}
                                 {% endif %}
@@ -418,7 +456,7 @@
         {% else %}
             <div class="empty-state">
                 <p>No logs found in the last 24 hours.</p>
-                <p>Events will appear here once Gmail or Slack notifications are processed.</p>
+                <p>Events will appear here once Gmail, Slack, or SMS notifications are processed.</p>
             </div>
         {% endif %}
     </div>

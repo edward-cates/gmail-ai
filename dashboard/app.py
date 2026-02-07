@@ -110,6 +110,8 @@ def _build_trace_summary(trace_id: str, entries: list[dict]) -> dict:
     batch_messages = None
     batch_reactions = None
     reaction = None
+    sms_mode = None
+    sms_length = None
     earliest = None
     latest = None
 
@@ -166,8 +168,18 @@ def _build_trace_summary(trace_id: str, entries: list[dict]) -> dict:
             batch_messages = meta.get("messages")
             batch_reactions = meta.get("reactions")
 
+        # SMS metadata
+        if not sms_mode and meta.get("mode"):
+            sms_mode = meta["mode"]
+        if stage == "sms_sent" and meta.get("length"):
+            sms_length = meta["length"]
+
     # Determine pipeline type
-    if "slack-handler" in services or "slack-processor" in services:
+    if "coach-handler" in services or "coach" in services:
+        pipeline = "coach"
+    elif "sms-handler" in services or "sms-coach" in services:
+        pipeline = "sms"
+    elif "slack-handler" in services or "slack-processor" in services:
         pipeline = "slack"
     else:
         pipeline = "email"
@@ -175,6 +187,18 @@ def _build_trace_summary(trace_id: str, entries: list[dict]) -> dict:
     # Build display title
     if batch_messages is not None:
         title = f"\U0001f4e6 Batch: {batch_messages} messages, {batch_reactions or 0} reactions"
+    elif pipeline == "coach" and sms_mode == "morning":
+        title = "Morning regimen card"
+    elif pipeline == "coach" and text_preview:
+        title = text_preview
+    elif pipeline == "coach":
+        title = "Coach interaction"
+    elif pipeline == "sms" and sms_mode == "morning":
+        title = "Morning coaching text" + (f" ({sms_length} chars)" if sms_length else "")
+    elif pipeline == "sms" and text_preview:
+        title = text_preview
+    elif pipeline == "sms":
+        title = f"SMS {'reply' if sms_mode == 'reply' else 'interaction'}"
     elif pipeline == "slack" and topic:
         title = topic
     elif pipeline == "slack" and text_preview:
@@ -202,6 +226,8 @@ def _build_trace_summary(trace_id: str, entries: list[dict]) -> dict:
         "text_preview": text_preview,
         "batch_messages": batch_messages,
         "batch_reactions": batch_reactions,
+        "sms_mode": sms_mode,
+        "sms_length": sms_length,
         "entry_count": len(entries),
         "earliest_timestamp": earliest or "",
         "latest_timestamp": latest or "",
@@ -225,6 +251,8 @@ async def dashboard(request: Request) -> HTMLResponse:
     # Stats
     email_count = sum(1 for g in groups if g["summary"]["pipeline"] == "email")
     slack_count = sum(1 for g in groups if g["summary"]["pipeline"] == "slack")
+    sms_count = sum(1 for g in groups if g["summary"]["pipeline"] == "sms")
+    coach_count = sum(1 for g in groups if g["summary"]["pipeline"] == "coach")
     failure_count = sum(1 for g in groups if g["summary"]["status"] == "failure")
 
     return templates.TemplateResponse("dashboard.html", {
@@ -234,6 +262,8 @@ async def dashboard(request: Request) -> HTMLResponse:
         "total_logs": len(logs),
         "email_count": email_count,
         "slack_count": slack_count,
+        "sms_count": sms_count,
+        "coach_count": coach_count,
         "failure_count": failure_count,
     })
 

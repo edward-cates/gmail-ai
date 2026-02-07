@@ -1,0 +1,122 @@
+"""Tests for coach Trello webhook handler Cloud Function."""
+
+import json
+from unittest.mock import MagicMock, patch
+
+from functions.coach_handler import (
+    handle_trello_webhook,
+    trigger_coach_morning,
+)
+
+
+def _make_request(method="POST", json_data=None):
+    """Create a mock Flask request."""
+    req = MagicMock()
+    req.method = method
+    req.get_json.return_value = json_data
+    return req
+
+
+class TestHandleTrelloWebhook:
+    """Tests for handle_trello_webhook()."""
+
+    def test_head_returns_200(self):
+        req = _make_request(method="HEAD")
+        result = handle_trello_webhook(req)
+        assert result == ({"ok": True}, 200)
+
+    def test_non_comment_action_skipped(self):
+        req = _make_request(json_data={
+            "action": {"type": "updateCard", "data": {}},
+        })
+        body, status = handle_trello_webhook(req)
+        assert status == 200
+        assert body["skipped"] == "updateCard"
+
+    @patch("functions.coach_handler._get_coach_member_id", return_value="coach123")
+    def test_own_comment_skipped(self, _mock_id):
+        req = _make_request(json_data={
+            "action": {
+                "type": "commentCard",
+                "memberCreator": {"id": "coach123", "fullName": "Coach Bot"},
+                "data": {
+                    "text": "Great job!",
+                    "card": {"id": "card1"},
+                    "board": {"id": "board1"},
+                },
+            },
+        })
+        body, status = handle_trello_webhook(req)
+        assert status == 200
+        assert body["skipped"] == "own_comment"
+
+    @patch.dict("os.environ", {"TRELLO_COACH_BOARD_ID": "expected_board"})
+    @patch("functions.coach_handler._get_coach_member_id", return_value="coach123")
+    def test_wrong_board_skipped(self, _mock_id):
+        req = _make_request(json_data={
+            "action": {
+                "type": "commentCard",
+                "memberCreator": {"id": "user456", "fullName": "Edward"},
+                "data": {
+                    "text": "Hello",
+                    "card": {"id": "card1"},
+                    "board": {"id": "wrong_board"},
+                },
+            },
+        })
+        body, status = handle_trello_webhook(req)
+        assert status == 200
+        assert body["skipped"] == "wrong_board"
+
+    @patch.dict("os.environ", {"TRELLO_COACH_BOARD_ID": "board1"})
+    @patch("functions.coach_handler._trigger_coach_job")
+    @patch("functions.coach_handler._get_coach_member_id", return_value="coach123")
+    def test_valid_comment_triggers_job(self, _mock_id, mock_trigger):
+        req = _make_request(json_data={
+            "action": {
+                "type": "commentCard",
+                "memberCreator": {"id": "user456", "fullName": "Edward"},
+                "data": {
+                    "text": "Hit 225 on squats!",
+                    "card": {"id": "card_abc"},
+                    "board": {"id": "board1"},
+                },
+            },
+        })
+        body, status = handle_trello_webhook(req)
+        assert status == 200
+        assert "trace_id" in body
+        mock_trigger.assert_called_once()
+        call_args = mock_trigger.call_args
+        assert call_args[0][1] == "Hit 225 on squats!"  # comment_text
+        assert call_args[0][2] == "card_abc"  # card_id
+
+    def test_empty_comment_skipped(self):
+        req = _make_request(json_data={
+            "action": {
+                "type": "commentCard",
+                "memberCreator": {"id": "user456", "fullName": "Edward"},
+                "data": {
+                    "text": "",
+                    "card": {"id": "card1"},
+                    "board": {"id": "board1"},
+                },
+            },
+        })
+        body, status = handle_trello_webhook(req)
+        assert status == 200
+        assert body["skipped"] == "empty"
+
+
+class TestTriggerCoachMorning:
+    """Tests for trigger_coach_morning()."""
+
+    @patch("functions.coach_handler._trigger_coach_job")
+    def test_triggers_morning_job(self, mock_trigger):
+        req = MagicMock()
+        result = trigger_coach_morning(req)
+        assert result["ok"] is True
+        assert "trace_id" in result
+        mock_trigger.assert_called_once()
+        call_kwargs = mock_trigger.call_args
+        assert call_kwargs[1]["mode"] == "morning"

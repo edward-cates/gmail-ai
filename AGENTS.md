@@ -132,48 +132,57 @@ On parse failure, the first 500 chars of Sonnet's response are logged for debugg
 Raw Slack markup (`<@U123>`, `<#C123>`) is resolved to readable names (`@Alice`, `#general`)
 before classification and Trello display.
 
-## SMS Muscle Growth Coach
+## Muscle Growth Coach (Trello)
 
 ### Architecture
 
 ```
-Cloud Scheduler (7 AM CT) → Cloud Function → Cloud Run Job (sms-coach)
+Cloud Scheduler (7 AM CT) → Cloud Function → Cloud Run Job (coach)
                                                     ↓
-                                          Read spec → Opus 4.6 → Twilio SMS
+                                          Read board desc (spec) + all cards/comments
+                                                    ↓
+                                          Opus 4.6 → Create regimen card + checklist
 
-Twilio Webhook (inbound SMS) → Cloud Function → Cloud Run Job (sms-coach) [immediate]
-                                                    ↓
-                                          Read spec + history → Opus 4.6
-                                                    ↓
-                                          Update spec → Twilio SMS reply
+Trello Webhook (comment on card) → Cloud Function → Cloud Run Job (coach) [immediate]
+                                                          ↓
+                                                Read board desc + card comments → Opus 4.6
+                                                          ↓
+                                                Reply comment + update board desc
 ```
 
-### Key Differences from Slack Pattern
+### State Management
 
-- **No batching** — inbound SMS triggers job immediately (like email-processor)
-- **Living spec document** — `gs://gmail-ai-logs/sms-coach/spec.md` read/updated each interaction
-- **Conversation history** — `gs://gmail-ai-logs/sms-coach/history.jsonl` stores last 50 messages
-- **Model**: Opus 4.6 for all interactions
+- **Board description** — Living spec/manifesto (replaces GCS spec.md)
+- **Card comments** — Conversation history (replaces GCS history.jsonl)
+- No GCS state files needed — all state lives in Trello
+
+### Board Structure
+
+- Board: `TRELLO_COACH_BOARD_ID`
+- Lists: "Active" (today's card), "Log" (previous days)
+- Morning card: workout regimen in description + exercise checklist + coach comment
 
 ### Cloud Functions
 
-- `sms_handler.py: handle_sms()` — Receives Twilio webhook, verifies signature, triggers job
-- `sms_handler.py: trigger_sms_morning()` — Called by Cloud Scheduler, triggers morning text
+- `coach_handler.py: handle_trello_webhook()` — Receives Trello webhook, filters for commentCard, skips own comments, triggers job
+- `coach_handler.py: trigger_coach_morning()` — Called by Cloud Scheduler, triggers morning card creation
 
 ### Environment Variables
 
-Cloud Functions (SMS):
-- `TWILIO_AUTH_TOKEN` — Verify Twilio webhook signatures (secret)
-- `SMS_COACH_JOB_NAME` — Cloud Run Job name (default: `sms-coach`)
+Cloud Functions (Coach):
+- `TRELLO_API_KEY` — Trello authentication (secret)
+- `TRELLO_TOKEN` — Trello authentication (secret)
+- `TRELLO_COACH_BOARD_ID` — Coach-specific Trello board
+- `COACH_JOB_NAME` — Cloud Run Job name (default: `coach`)
 
-Cloud Run (sms-coach):
+Cloud Run (coach):
 - `ANTHROPIC_API_KEY` — For Claude
-- `TWILIO_ACCOUNT_SID` — Twilio account identifier
-- `TWILIO_AUTH_TOKEN` — Twilio authentication
-- `TWILIO_FROM_NUMBER` — Twilio phone number to send from
-- `TWILIO_TO_NUMBER` — User's phone number
-- `SMS_MODE` — "morning" or "reply" (set via container override)
-- `SMS_BODY` — Inbound message text (reply mode only)
+- `TRELLO_API_KEY` — Trello authentication (secret)
+- `TRELLO_TOKEN` — Trello authentication (secret)
+- `TRELLO_COACH_BOARD_ID` — Coach-specific Trello board
+- `COACH_MODE` — "morning" or "reply" (set via container override)
+- `COMMENT_TEXT` — User's comment text (reply mode only)
+- `CARD_ID` — Card the comment was on (reply mode only)
 
 ## Cloud Functions (`functions/`)
 
