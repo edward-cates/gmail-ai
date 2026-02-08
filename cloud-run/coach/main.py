@@ -235,6 +235,21 @@ class TrelloClient:
 COACH_PREFIX = "**[Coach]**"
 
 
+def _utc_to_ct(iso_str):
+    """Convert a UTC ISO timestamp to Central Time display string."""
+    if not iso_str or len(iso_str) < 16:
+        return iso_str
+    try:
+        from datetime import UTC
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        ct = dt.astimezone(CT)
+        return ct.strftime("%b %-d %-I:%M %p").lower()
+    except (ValueError, TypeError):
+        return iso_str[:16]
+
+
 def _comment_role(text):
     """Determine if a comment is from the coach or the client."""
     return "Coach" if text.startswith(COACH_PREFIX) else "Client"
@@ -273,7 +288,7 @@ def read_board_context(trello):
 
         comments = trello.get_card_comments(card["id"])
         for comment in comments:
-            ts = comment.get("date", "")[:16]
+            ts = _utc_to_ct(comment.get("date", ""))
             text = comment.get("data", {}).get("text", "")
             role = _comment_role(text)
             lines.append(f"[{ts}] {role}: {text}")
@@ -366,11 +381,12 @@ def generate_morning_cards(spec, board_context):
     now_ct = datetime.now(tz=CT)
     day_of_week = now_ct.strftime("%A")
     date_str = now_ct.strftime("%B %d, %Y")
+    time_str = now_ct.strftime("%-I:%M %p").lower()
 
     prompt = f"""You are a muscle growth coach managing a client's training via a Trello board.
 Each morning you create cards for the day's training and nutrition.
 
-Today is {day_of_week}, {date_str}.
+Today is {day_of_week}, {date_str}. Current time: {time_str} Central.
 
 ## Board Structure
 The board has three lists:
@@ -454,11 +470,12 @@ def generate_reply(spec, board_context, card_context, user_comment, card_name):
 
     now_ct = datetime.now(tz=CT)
     day_of_week = now_ct.strftime("%A")
+    time_str = now_ct.strftime("%-I:%M %p").lower()
 
     prompt = f"""You are a muscle growth coach communicating with your client via Trello card comments.
 Your client just commented on a card. Read their message and respond helpfully.
 
-Today is {day_of_week}.
+Today is {day_of_week}. Current time: {time_str} Central.
 
 ## Board Structure
 The board has three lists:
