@@ -366,11 +366,12 @@ def generate_morning_cards(spec, board_context):
     now_ct = datetime.now(tz=CT)
     day_of_week = now_ct.strftime("%A")
     date_str = now_ct.strftime("%B %d, %Y")
+    time_str = now_ct.strftime("%I:%M %p")
 
     prompt = f"""You are a muscle growth coach managing a client's training via a Trello board.
 Each morning you create cards for the day's training and nutrition.
 
-Today is {day_of_week}, {date_str}.
+Today is {day_of_week}, {date_str}. Current time: {time_str} Central Time.
 
 ## Board Structure
 The board has three lists:
@@ -454,11 +455,13 @@ def generate_reply(spec, board_context, card_context, user_comment, card_name):
 
     now_ct = datetime.now(tz=CT)
     day_of_week = now_ct.strftime("%A")
+    date_str = now_ct.strftime("%B %d, %Y")
+    time_str = now_ct.strftime("%I:%M %p")
 
     prompt = f"""You are a muscle growth coach communicating with your client via Trello card comments.
 Your client just commented on a card. Read their message and respond helpfully.
 
-Today is {day_of_week}.
+Today is {day_of_week}, {date_str}. Current time: {time_str} Central Time.
 
 ## Board Structure
 The board has three lists:

@@ -168,6 +168,31 @@ class TestGenerateMorningCards:
         assert result["spec_update_instruction"] is None
         assert mock_client.messages.create.call_args[1]["model"] == "claude-opus-4-6"
 
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.object(coach.anthropic, "Anthropic")
+    def test_includes_current_time_in_prompt(self, mock_cls):
+        """Verify that the current time in Central Time is included in the prompt."""
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.messages.create.return_value = _mock_api_response(
+            json.dumps({
+                "exercise": None,
+                "nutrition": None,
+                "forum": {"title": "Check In", "description": "", "comment": "Hi"},
+                "actions": [],
+                "spec_update_instruction": None,
+            })
+        )
+        coach.generate_morning_cards("# Spec", "")
+
+        # Extract the prompt that was passed to the API
+        call_args = mock_client.messages.create.call_args
+        prompt = call_args[1]["messages"][0]["content"]
+
+        # Verify the prompt includes "Current time:" and "Central Time"
+        assert "Current time:" in prompt
+        assert "Central Time" in prompt
+
 
 class TestGenerateReply:
     """Tests for generate_reply()."""
@@ -179,6 +204,7 @@ class TestGenerateReply:
         mock_cls.return_value = mock_client
         mock_client.messages.create.return_value = _mock_api_response(
             json.dumps({
+                "reaction": "muscle",
                 "message": "Nice work!",
                 "actions": [],
                 "spec_update_instruction": None,
@@ -195,6 +221,7 @@ class TestGenerateReply:
         mock_cls.return_value = mock_client
         mock_client.messages.create.return_value = _mock_api_response(
             json.dumps({
+                "reaction": "fire",
                 "message": "225 5x5 is huge!",
                 "actions": [],
                 "spec_update_instruction": "Update squat PR to 225x5x5",
@@ -203,6 +230,30 @@ class TestGenerateReply:
         result = coach.generate_reply("# Spec", "", "", "Hit 225 for 5x5!", "Leg Day")
         assert result["spec_update_instruction"] is not None
         assert "225" in result["spec_update_instruction"]
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.object(coach.anthropic, "Anthropic")
+    def test_includes_current_time_in_prompt(self, mock_cls):
+        """Verify that the current time in Central Time is included in the prompt."""
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.messages.create.return_value = _mock_api_response(
+            json.dumps({
+                "reaction": "eyes",
+                "message": "Got it!",
+                "actions": [],
+                "spec_update_instruction": None,
+            })
+        )
+        coach.generate_reply("# Spec", "", "", "Just finished workout", "Push Day")
+
+        # Extract the prompt that was passed to the API
+        call_args = mock_client.messages.create.call_args
+        prompt = call_args[1]["messages"][0]["content"]
+
+        # Verify the prompt includes "Current time:" and "Central Time"
+        assert "Current time:" in prompt
+        assert "Central Time" in prompt
 
 
 class TestApplySpecUpdate:
