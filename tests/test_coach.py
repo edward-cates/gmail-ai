@@ -58,6 +58,25 @@ class TestJsonParsing:
         assert result["nutrition"]["checklist"] == ["Meal 1: Oatmeal + whey"]
 
 
+class TestUtcToCt:
+    """Tests for _utc_to_ct() timestamp conversion."""
+
+    def test_converts_utc_to_central(self):
+        # 2:00 PM UTC = 8:00 AM CT
+        result = coach._utc_to_ct("2026-02-06T14:00:00.000Z")
+        assert "8:00 am" in result
+
+    def test_handles_iso_without_z(self):
+        result = coach._utc_to_ct("2026-02-06T20:30:00")
+        assert "2:30 pm" in result
+
+    def test_empty_string(self):
+        assert coach._utc_to_ct("") == ""
+
+    def test_short_string(self):
+        assert coach._utc_to_ct("2026") == "2026"
+
+
 class TestReadBoardContext:
     """Tests for read_board_context()."""
 
