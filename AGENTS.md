@@ -163,6 +163,29 @@ Trello Webhook (comment on card) → Cloud Function → Cloud Run Job (coach)
 
 Uses the `anthropic` SDK directly (not langchain) for faster container startup.
 
+### Dual-Model Spec Update Strategy
+
+The spec (board description) is the coach's only long-term memory. Updating it
+requires two things: coaching judgment (what to change) and reliable text editing
+(applying the change without breaking the rest of the document).
+
+**Why not have Opus write the full spec?** Early versions had Opus return the
+complete updated spec as a JSON field. The spec grew, and the full text inside
+a JSON response hit output token limits — producing truncated JSON that broke
+parsing. The spec was lost.
+
+**The split:** Opus outputs a `spec_update_instruction` — a brief plain-English
+description of what to change (e.g., "Update squat PR to 225, remove Tuesday's
+grocery list, add vitamin D 5000 IU to supplements"). This is short and never
+truncates. Haiku then receives the current spec + the instruction, applies the
+edits, and returns the complete updated spec. Haiku's call is not JSON — it
+returns raw text with plenty of output tokens.
+
+**Why this works:** Opus has full context (board, conversation, spec) and makes
+the judgment calls. Haiku is just a text editor — it follows precise instructions
+and preserves everything it wasn't told to touch. The prompt explicitly tells it
+to only make the described changes and keep everything else intact.
+
 ### State Management
 
 - **Board description** — Living spec/manifesto. The coach's ONLY long-term memory. Updated via Haiku after each interaction.
