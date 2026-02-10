@@ -221,11 +221,14 @@ class TestThreadHandling:
     @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
     def test_thread_reply_skips_classification(self):
         """Thread replies with a matching parent card should skip Opus."""
+        processor._mentioned_label_id = None
+
         mock_slack = MagicMock()
         mock_slack.channel_link.return_value = "https://slack.com/archives/C1"
         mock_slack.message_link.return_value = "https://slack.com/archives/C1/p333"
 
         mock_trello = MagicMock()
+        mock_trello.get_board_labels.return_value = [{"id": "lbl1", "name": "Mentioned"}]
         cards = [{
             "id": "card1", "name": "Topic", "idList": "list1",
             "desc": "Description\n\n**Threads**\n- [msg](link) `ts:111.222`",
@@ -473,6 +476,32 @@ class TestMentionedLabel:
 
         mock_trello.create_label.assert_called_once_with("Mentioned", color="yellow")
         mock_trello.add_label_to_card.assert_called_once_with("card1", "new_lbl")
+
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    def test_thread_reply_applies_mentioned_label(self):
+        """Thread replies should auto-apply the Mentioned label since Edward participates."""
+        processor._mentioned_label_id = None
+
+        mock_slack = MagicMock()
+        mock_slack.channel_link.return_value = "https://slack.com/archives/C1"
+        mock_slack.message_link.return_value = "https://slack.com/archives/C1/p333"
+
+        mock_trello = MagicMock()
+        mock_trello.get_board_labels.return_value = [{"id": "lbl1", "name": "Mentioned"}]
+        cards = [{
+            "id": "card1", "name": "Topic", "idList": "list1",
+            "desc": "Description\n\n**Threads**\n- [msg](link) `ts:111.222`",
+        }]
+
+        msg = {
+            "sender": "Bob", "channel": "general", "text": "agreed",
+            "channel_id": "C1", "user_id": "U2", "ts": "333.444",
+            "thread_ts": "111.222", "is_thread_reply": True,
+        }
+
+        result = processor._process_thread_reply(msg, mock_slack, mock_trello, cards, "batch-t")
+        assert result is True
+        mock_trello.add_label_to_card.assert_called_once_with("card1", "lbl1")
 
 
 class TestShortMessageContext:

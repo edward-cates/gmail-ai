@@ -648,8 +648,9 @@ creates a concrete task for Edward — e.g. "Review auth PR", "Respond to Alice 
 timeline", "Approve staging release". Keep it under 10 words. Do NOT invent tasks from
 general discussion or FYI messages.
 
-"mentioned" is true when Edward Cates is directly mentioned, tagged, or addressed by name
-in this message. False otherwise."""
+"mentioned" is true when this message involves Edward Cates — he is directly mentioned,
+tagged, addressed by name, or the message is a reply to something Edward said, answers his
+question, or is part of a conversation directed at him. False otherwise."""
 
     response = llm.invoke(prompt)
     content = response.content.strip()
@@ -793,6 +794,11 @@ def _process_thread_reply(msg, slack, trello, cards, batch_trace_id):
         comment += f'\n\n[View message]({msg_link})'
 
     trello.add_comment(card["id"], comment)
+
+    # Thread replies are to threads Edward participates in — apply Mentioned label
+    label_id = _get_mentioned_label_id(trello)
+    if label_id:
+        trello.add_label_to_card(card["id"], label_id)
 
     # Add this reply's ts to threads section too
     current_desc = card.get("desc", "")
