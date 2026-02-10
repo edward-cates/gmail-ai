@@ -164,6 +164,33 @@ class TrelloClient:
         r.raise_for_status()
         return r.json()
 
+    def get_board_labels(self):
+        """Get all labels on the board."""
+        r = requests.get(
+            f"{self.BASE_URL}/boards/{self.board_id}/labels",
+            params=self._params(),
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def create_label(self, name, color="yellow"):
+        """Create a label on the board."""
+        r = requests.post(
+            f"{self.BASE_URL}/boards/{self.board_id}/labels",
+            params=self._params(name=name, color=color),
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def add_label_to_card(self, card_id, label_id):
+        """Add a label to a card."""
+        r = requests.post(
+            f"{self.BASE_URL}/cards/{card_id}/idLabels",
+            params=self._params(value=label_id),
+        )
+        r.raise_for_status()
+        return r.json()
+
     def get_comments(self, card_id):
         """Get all comments on a card, sorted by date."""
         r = requests.get(
@@ -610,15 +637,19 @@ Respond with a JSON array, one entry per message in the same order:
         "topic_name": "emoji + short descriptive topic name (3-6 words), e.g. '🔍 Auth PR review'",
         "priority": "needs_response|action_required|worth_reading|noted|noise",
         "description": "1-2 line description of this topic",
-        "action_item": "short concrete task for Edward, or null if none"
+        "action_item": "short concrete task for Edward, or null if none",
+        "mentioned": true or false
     }},
     ...
 ]
 
-IMPORTANT: "action_item" should be null for MOST messages. Only include one when THIS
-specific message creates a concrete task for Edward — e.g. "Review auth PR",
-"Respond to Alice re: deploy timeline", "Approve staging release". Keep it under 10 words.
-Do NOT invent tasks from general discussion or FYI messages."""
+"action_item" should be null for MOST messages. Only include one when THIS specific message
+creates a concrete task for Edward — e.g. "Review auth PR", "Respond to Alice re: deploy
+timeline", "Approve staging release". Keep it under 10 words. Do NOT invent tasks from
+general discussion or FYI messages.
+
+"mentioned" is true when Edward Cates is directly mentioned, tagged, or addressed by name
+in this message. False otherwise."""
 
     response = llm.invoke(prompt)
     content = response.content.strip()
@@ -882,6 +913,24 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
             log_structured(batch_trace_id, "trello_action", "failure", {"error": str(e)})
 
 
+_mentioned_label_id = None
+
+
+def _get_mentioned_label_id(trello):
+    """Get or create the 'Mentioned' label on the board (cached)."""
+    global _mentioned_label_id  # noqa: PLW0603
+    if _mentioned_label_id:
+        return _mentioned_label_id
+    labels = trello.get_board_labels()
+    for label in labels:
+        if label.get("name") == "Mentioned":
+            _mentioned_label_id = label["id"]
+            return _mentioned_label_id
+    new_label = trello.create_label("Mentioned", color="yellow")
+    _mentioned_label_id = new_label["id"]
+    return _mentioned_label_id
+
+
 def _add_action_item(trello, card_id, action_item):
     """Add a single action item to a card's checklist (create checklist if needed)."""
     checklists = trello.get_checklists(card_id)
@@ -952,6 +1001,14 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
             except Exception as e:
                 logger.warning(f"[{trace_id}] Failed to add action item to {card_id}: {e}")
 
+        # Tag card if Edward was mentioned
+        if classification.get("mentioned"):
+            try:
+                label_id = _get_mentioned_label_id(trello)
+                trello.add_label_to_card(card_id, label_id)
+            except Exception as e:
+                logger.warning(f"[{trace_id}] Failed to add mentioned label to {card_id}: {e}")
+
         log_structured(trace_id, "trello_update", "success", {
             "card_id": card_id, "topic": topic_name, "priority": priority,
         })
@@ -973,6 +1030,14 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
                 _add_action_item(trello, card_id, action_item)
             except Exception as e:
                 logger.warning(f"[{trace_id}] Failed to add action item to {card_id}: {e}")
+
+        # Tag card if Edward was mentioned
+        if classification.get("mentioned"):
+            try:
+                label_id = _get_mentioned_label_id(trello)
+                trello.add_label_to_card(card_id, label_id)
+            except Exception as e:
+                logger.warning(f"[{trace_id}] Failed to add mentioned label to {card_id}: {e}")
 
         # Track for other messages in this batch
         new_cards_by_topic[topic_name] = card_id
