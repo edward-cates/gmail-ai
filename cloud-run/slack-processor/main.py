@@ -643,7 +643,8 @@ Respond with a JSON array, one entry per message in the same order:
         "topic_name": "emoji + specific concrete title (3-8 words) — use real names, details, and specifics, NOT abstract summaries. e.g. '🔍 Alice needs auth PR review', '📅 Planning meeting @ 2p Tues', '🎵 Ryman shared Disco Disco'",
         "priority": "needs_response|action_required|worth_reading|noted|noise",
         "description": "1-2 line description of this topic",
-        "action_item": "short concrete task for Edward, or null if none"
+        "action_item": "short concrete task for Edward, or null if none",
+        "mentioned": true or false
     }},
     ...
 ]
@@ -651,7 +652,9 @@ Respond with a JSON array, one entry per message in the same order:
 "action_item" should be null for MOST messages. Only include one when THIS specific message
 creates a concrete task for Edward — e.g. "Review auth PR", "Respond to Alice re: deploy
 timeline", "Approve staging release". Keep it under 10 words. Do NOT invent tasks from
-general discussion or FYI messages."""
+general discussion or FYI messages.
+
+"mentioned" is true when Edward Cates is mentioned by name or tagged in this message text. False otherwise."""
 
     response = llm.invoke(prompt)
     content = response.content.strip()
@@ -1022,8 +1025,8 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
             except Exception as e:
                 logger.warning(f"[{trace_id}] Failed to add action item to {card_id}: {e}")
 
-        # Tag card if Edward sent this message
-        if is_my_message:
+        # Tag card if Edward sent or is mentioned in this message
+        if is_my_message or classification.get("mentioned"):
             try:
                 label_id = _get_mentioned_label_id(trello)
                 trello.add_label_to_card(card_id, label_id)
@@ -1052,8 +1055,8 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
             except Exception as e:
                 logger.warning(f"[{trace_id}] Failed to add action item to {card_id}: {e}")
 
-        # Tag card if Edward sent this message
-        if is_my_message:
+        # Tag card if Edward sent or is mentioned in this message
+        if is_my_message or classification.get("mentioned"):
             try:
                 label_id = _get_mentioned_label_id(trello)
                 trello.add_label_to_card(card_id, label_id)
