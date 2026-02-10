@@ -474,7 +474,7 @@ class TestMentionedLabel:
 
         processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, [], {}, {})
 
-        mock_trello.create_label.assert_called_once_with("Mentioned", color="yellow")
+        mock_trello.create_label.assert_called_once_with("Mentioned", color="red")
         mock_trello.add_label_to_card.assert_called_once_with("card1", "new_lbl")
 
     @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})

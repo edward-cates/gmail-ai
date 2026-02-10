@@ -173,7 +173,7 @@ class TrelloClient:
         r.raise_for_status()
         return r.json()
 
-    def create_label(self, name, color="yellow"):
+    def create_label(self, name, color="red"):
         """Create a label on the board."""
         r = requests.post(
             f"{self.BASE_URL}/boards/{self.board_id}/labels",
@@ -932,7 +932,7 @@ def _get_mentioned_label_id(trello):
         if label.get("name") == "Mentioned":
             _mentioned_label_id = label["id"]
             return _mentioned_label_id
-    new_label = trello.create_label("Mentioned", color="yellow")
+    new_label = trello.create_label("Mentioned", color="red")
     _mentioned_label_id = new_label["id"]
     return _mentioned_label_id
 
