@@ -16,10 +16,10 @@ Gmail Watch → Pub/Sub → Cloud Function → Cloud Run Job (email-processor)
                                     Classify → Act → Log
 
 Slack Events API → Cloud Function → Cloud Storage (queue)
-                                        ↓ (every 15 min, configurable)
+                                        ↓ (every 5 min)
                               Cloud Scheduler → Cloud Function → Cloud Run Job (slack-processor)
                                                                       ↓
-                                                          Classify (Sonnet) → Update Trello (Haiku)
+                                                            Classify + Describe (Opus 4.6) → Update Trello
 ```
 
 All code is standalone with no cross-imports between top-level directories:
@@ -49,33 +49,39 @@ Emails with subject starting with `🤖` are skipped (app's own emails).
 
 ## Slack → Trello Board
 
-### Model Split
+### Model
 
-| Model | Role | When |
-|-------|------|------|
-| Sonnet 4.5 (`claude-sonnet-4-5`) | Batch topic classification + priority | One call per batch (every 15 min) |
-| Haiku (`claude-3-5-haiku-20241022`) | Card description updates, action item revision, reaction interpretation | Per-card, cheap |
+Single Opus 4.6 (`claude-opus-4-6`) call per batch — classifies messages into topics,
+names them, assigns priority, writes a 1-2 line description, flags action items, and
+detects whether Edward is involved. No downstream model calls.
+
+Uses `SLACK_AI_API_KEY` (dedicated key for Slack processing costs).
 
 ### Priorities
 
 | Priority | Meaning | Action |
 |----------|---------|--------|
-| `needs_response` | Someone is waiting on me | Card in "Needs Response" |
-| `action_required` | I need to do something | Card in "Action Required" |
-| `worth_reading` | Relevant info, no action | Card in "Worth Reading" |
+| `needs_response` | Someone is waiting on **Edward** specifically | Card in "Needs Response" |
+| `action_required` | **Edward** personally needs to do something | Card in "Action Required" |
+| `worth_reading` | Relevant info, no action needed from Edward | Card in "Worth Reading" |
+| `noted` | Low-priority but worth tracking | Card in "Noted" |
 | `noise` | Zero informational value ("thanks!", "ok", emoji-only) | Silently dropped, never reaches Trello |
 
+`needs_response` and `action_required` are ONLY for Edward Cates personally.
+If someone else needs to act, it's `worth_reading` or `noted`.
+
 Short messages (< 20 chars) that are NOT thread replies get 3 preceding channel messages
-fetched as context, so Sonnet can distinguish noise ("ok!") from meaningful agreement.
+fetched as context, so Opus can distinguish noise ("ok!") from meaningful agreement.
 
 ### Batch Processing
 
 1. Slack handler receives events via HTTP webhook, stores them in `gs://gmail-ai-logs/slack-pending/`
-2. Cloud Scheduler triggers batch function (default: every 15 min, change via `./scripts/set_batch_interval.sh`)
+2. Cloud Scheduler triggers batch function (every 5 min)
 3. Batch function checks for pending events, triggers slack-processor Cloud Run Job
 4. Processor reads all pending events, **clears queue immediately**, then classifies
 5. For each channel in the batch, fetches last 15 messages from Slack API as conversation context
-6. One Sonnet call classifies all messages with full context, then updates Trello per message
+6. One Opus call classifies all messages with full context, then updates Trello per message
+7. Every 30 min (tracked via GCS timestamp), runs dedup pass to merge duplicate/overlapping cards
 
 Queue is cleared before processing to prevent reprocessing on timeout/crash.
 No fallback on parse failure — errors are logged and the batch is skipped.
@@ -84,7 +90,7 @@ No fallback on parse failure — errors are logged and the batch is skipped.
 
 Thread replies (messages with `thread_ts != ts`) skip classification entirely:
 - Processor matches `thread_ts` against `ts:` markers stored in card descriptions
-- If parent card found → add comment directly (no Sonnet call)
+- If parent card found → add comment directly (no Opus call), auto-apply Mentioned label
 - If parent not found → fall back to normal classification
 
 ### Trello Board
@@ -95,11 +101,10 @@ Cards escalate to higher-priority lists automatically (never demote).
 
 ### Card Structure
 
-Each card = a topic.
+Each card = a topic. Title is specific and concrete (real names, details), not abstract.
 
-**Description** has three sections:
-- `**Summary**` — 1-3 sentence living brief, updated by Haiku on each new message
-- `**Reactions**` — Natural-language sentiment from emoji reactions on user's own messages
+**Description** has two sections:
+- Opus-generated 1-2 line description of the topic
 - `**Threads**` — List of linked messages with `ts:` markers for thread matching
 
 **Comments** — Individual messages with:
@@ -108,24 +113,33 @@ Each card = a topic.
 - "View message" link (deep link to specific Slack message)
 - Thread replies labeled as "(thread reply)"
 
-**Checklist** — Action items, managed by Haiku during summary updates:
-- New items added when messages create tasks
-- Items marked complete when conversation resolves them
-- All items unchecked when an existing card receives a new message
-- Sonnet provides initial action items during classification; Haiku revises on each update
+**Checklist** — Per-message action items from Opus (most messages get none):
+- Only created when a specific message creates a concrete task for Edward
+- Short (under 10 words), e.g. "Review auth PR", "Respond to Alice re: deploy timeline"
 
-### Board Description (Memory)
+**Labels**:
+- Red "Mentioned" label — applied when Edward is involved in the conversation
+  (directly mentioned, tagged, addressed, or message is directed at him).
+  Thread replies auto-get this label. Created automatically if it doesn't exist.
 
-The Trello board description acts as persistent user context / memory.
-Haiku updates it after each batch with observations about projects, people, priorities.
-Sonnet reads it during classification to improve grouping. User can view and edit it
-directly in Trello (click board name → "About this board").
+### Board Description (Read-Only Context)
+
+The Trello board description is user-maintained context about Edward, his projects,
+and priorities. Opus reads it during classification to improve grouping and priority
+decisions. The processor never writes to it.
+
+### Dedup (every 30 min)
+
+After message processing, if ≥30 min since last dedup (tracked in GCS `slack-dedup/last_run.txt`):
+1. Fetch all open cards with comment previews
+2. Opus identifies groups of duplicate/overlapping topics
+3. For each group: create merged card, zipper comments chronologically, delete originals
 
 ### Logging & Debugging
 
 All batch events share a single `batch_trace_id` (one collapsible group in dashboard).
-Timing is logged for: channel context fetch, Sonnet call, total batch duration.
-On parse failure, the first 500 chars of Sonnet's response are logged for debugging.
+Timing is logged for: channel context fetch, Opus call, total batch duration.
+On parse failure, the first 500 chars of Opus's response are logged for debugging.
 
 ### User Mentions
 
@@ -309,7 +323,7 @@ Cloud Run (email-processor):
 - `ANTHROPIC_API_KEY` — For Claude
 
 Cloud Run (slack-processor):
-- `ANTHROPIC_API_KEY` — For Claude
+- `SLACK_AI_API_KEY` — Dedicated Anthropic API key for Slack processing
 - `SLACK_BOT_TOKEN` — Slack API access (user token, `xoxp-`)
 - `TRELLO_API_KEY` — Trello API key
 - `TRELLO_TOKEN` — Trello auth token
@@ -331,6 +345,8 @@ make check-logs
 ```
 
 ## Batch Interval
+
+Default: every 5 min (set in Makefile `setup-slack-scheduler`).
 
 ```bash
 ./scripts/set_batch_interval.sh 5    # every 5 min
@@ -375,6 +391,7 @@ Sync an env var from `.env` to GCP Secret Manager:
 | Env Var | Secret Name |
 |---------|-------------|
 | `ANTHROPIC_API_KEY` | `anthropic-api-key` |
+| `SLACK_AI_API_KEY` | `slack-ai-api-key` |
 | `SLACK_BOT_TOKEN` | `slack-bot-token` |
 | `SLACK_SIGNING_SECRET` | `slack-signing-secret` |
 | `TRELLO_API_KEY` | `trello-api-key` |
