@@ -799,10 +799,14 @@ def _process_thread_reply(msg, slack, trello, cards, batch_trace_id):
 
     trello.add_comment(card["id"], comment)
 
-    # Thread replies are to threads Edward participates in — apply Mentioned label
-    label_id = _get_mentioned_label_id(trello)
-    if label_id:
-        trello.add_label_to_card(card["id"], label_id)
+    # Tag card if Edward sent this thread reply
+    is_my_message = msg.get("user_id") == slack.get_authed_user_id()
+    if is_my_message:
+        try:
+            label_id = _get_mentioned_label_id(trello)
+            trello.add_label_to_card(card["id"], label_id)
+        except Exception as e:
+            logger.warning(f"Failed to add mentioned label to {card['id']}: {e}")
 
     # Add this reply's ts to threads section too
     current_desc = card.get("desc", "")
