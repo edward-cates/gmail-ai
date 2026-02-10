@@ -251,7 +251,7 @@ deploy-slack-processor:
 		--max-retries=0 \
 		--service-account="$$SERVICE_ACCOUNT" \
 		--set-env-vars="TRELLO_BOARD_ID=CGZ3WUaG,GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=$(PROJECT_ID)" \
-		--set-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest,SLACK_BOT_TOKEN=slack-bot-token:latest,TRELLO_API_KEY=trello-api-key:latest,TRELLO_TOKEN=trello-token:latest" \
+		--set-secrets="SLACK_AI_API_KEY=slack-ai-api-key:latest,SLACK_BOT_TOKEN=slack-bot-token:latest,TRELLO_API_KEY=trello-api-key:latest,TRELLO_TOKEN=trello-token:latest" \
 		--project=$(PROJECT_ID) && \
 	echo "✓ slack-processor job deployed!"
 
@@ -431,7 +431,7 @@ setup-coach-scheduler:
 	fi
 
 setup-slack-scheduler:
-	@echo "Setting up Slack batch scheduler (every 15 minutes)..."
+	@echo "Setting up Slack batch scheduler (every 5 minutes)..."
 	@FUNCTION_URL=$$(gcloud functions describe slack-batch-trigger --gen2 --region=$(REGION) --project=$(PROJECT_ID) --format="value(serviceConfig.uri)" 2>/dev/null); \
 	if [ -z "$$FUNCTION_URL" ]; then \
 		echo "Error: deploy-slack-batch-trigger first"; exit 1; \
@@ -439,9 +439,9 @@ setup-slack-scheduler:
 	JOB_EXISTS=$$(gcloud scheduler jobs describe slack-batch-processor --location=$(REGION) --project=$(PROJECT_ID) --format="value(name)" 2>/dev/null | wc -l); \
 	if [ "$$JOB_EXISTS" -eq 0 ]; then \
 		gcloud scheduler jobs create http slack-batch-processor \
-			--location=$(REGION) --schedule="*/15 * * * *" --uri="$$FUNCTION_URL" \
+			--location=$(REGION) --schedule="*/5 * * * *" --uri="$$FUNCTION_URL" \
 			--http-method=GET --time-zone="America/Los_Angeles" --project=$(PROJECT_ID); \
-		echo "✓ Slack batch scheduler created (every 15 min)"; \
+		echo "✓ Slack batch scheduler created (every 5 min)"; \
 	else \
 		echo "✓ Slack batch scheduler already exists"; \
 	fi

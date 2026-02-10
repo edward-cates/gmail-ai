@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 # Add cloud-run/slack-processor to path so we can import it standalone
@@ -14,7 +15,7 @@ import main as processor  # noqa: E402
 class TestBatchClassification:
     """Tests for batch_classify_messages()."""
 
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "test-key"})
     @patch("main.ChatAnthropic")
     def test_single_message_classification(self, mock_anthropic_cls):
         mock_llm = MagicMock()
@@ -26,8 +27,7 @@ class TestBatchClassification:
             "existing_topic_id": None,
             "topic_name": "API design discussion",
             "priority": "worth_reading",
-            "action_items": [],
-            "summary": "Team discussing API design choices.",
+            "description": "Team discussing REST vs GraphQL for API design.",
         }])
         mock_llm.invoke.return_value = mock_response
 
@@ -41,9 +41,9 @@ class TestBatchClassification:
         assert result[0]["priority"] == "worth_reading"
         # Verify Opus model used
         mock_anthropic_cls.assert_called_once()
-        assert mock_anthropic_cls.call_args[1]["model"] == "claude-sonnet-4-5"
+        assert mock_anthropic_cls.call_args[1]["model"] == "claude-opus-4-6"
 
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "test-key"})
     @patch("main.ChatAnthropic")
     def test_batch_of_three_messages(self, mock_anthropic_cls):
         mock_llm = MagicMock()
@@ -51,9 +51,9 @@ class TestBatchClassification:
 
         mock_response = MagicMock()
         mock_response.content = json.dumps([
-            {"msg_idx": 1, "existing_topic_id": "card1", "topic_name": "Sprint", "priority": "worth_reading", "action_items": [], "summary": "Sprint update"},
-            {"msg_idx": 2, "existing_topic_id": None, "topic_name": "New feature", "priority": "needs_response", "action_items": ["Review the PR"], "summary": "PR needs review"},
-            {"msg_idx": 3, "existing_topic_id": "card1", "topic_name": "Sprint", "priority": "action_required", "action_items": [], "summary": "More sprint details"},
+            {"msg_idx": 1, "existing_topic_id": "card1", "topic_name": "Sprint", "priority": "worth_reading", "description": "Sprint going well."},
+            {"msg_idx": 2, "existing_topic_id": None, "topic_name": "New feature", "priority": "needs_response", "description": "PR needs review from Edward."},
+            {"msg_idx": 3, "existing_topic_id": "card1", "topic_name": "Sprint", "priority": "action_required", "description": "Sprint blockers identified."},
         ])
         mock_llm.invoke.return_value = mock_response
 
@@ -70,13 +70,13 @@ class TestBatchClassification:
         # First and third match existing topic
         assert result[0]["existing_topic_id"] == "card1"
         assert result[2]["existing_topic_id"] == "card1"
-        # Second is new with action item
+        # Second is new
         assert result[1]["existing_topic_id"] is None
-        assert result[1]["action_items"] == ["Review the PR"]
+        assert result[1]["description"] == "PR needs review from Edward."
         # Only ONE call to Claude
         assert mock_llm.invoke.call_count == 1
 
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "test-key"})
     @patch("main.ChatAnthropic")
     def test_raises_on_parse_error(self, mock_anthropic_cls):
         mock_llm = MagicMock()
@@ -92,185 +92,15 @@ class TestBatchClassification:
             processor.batch_classify_messages(messages, [])
 
 
-class TestDescriptionUpdates:
-    """Tests for Haiku description update functions."""
-
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
-    @patch("main.ChatAnthropic")
-    def test_summary_update_returns_structured(self, mock_anthropic_cls):
-        mock_llm = MagicMock()
-        mock_anthropic_cls.return_value = mock_llm
-
-        mock_response = MagicMock()
-        mock_response.content = json.dumps({
-            "description": "**Summary**\nUpdated summary.\n\n**Reactions**\nNo reactions yet.\n\n**Threads**\n",
-            "action_items": [{"text": "Review the PR", "completed": False}],
-        })
-        mock_llm.invoke.return_value = mock_response
-
-        result = processor.update_description_summary(
-            "", "backend", "We should refactor the auth module", "Alice"
-        )
-
-        assert isinstance(result, dict)
-        assert "**Summary**" in result["description"]
-        assert len(result["action_items"]) == 1
-        assert result["action_items"][0]["text"] == "Review the PR"
-        # Verify Haiku model used
-        assert mock_anthropic_cls.call_args[1]["model"] == "claude-3-5-haiku-20241022"
-
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
-    @patch("main.ChatAnthropic")
-    def test_summary_update_fallback_on_bad_json(self, mock_anthropic_cls):
-        mock_llm = MagicMock()
-        mock_anthropic_cls.return_value = mock_llm
-
-        mock_response = MagicMock()
-        mock_response.content = "**Summary**\nPlain text fallback.\n\n**Reactions**\nNone."
-        mock_llm.invoke.return_value = mock_response
-
-        result = processor.update_description_summary(
-            "", "backend", "message", "Alice",
-            current_action_items=[{"text": "existing item", "completed": False}],
-        )
-
-        assert isinstance(result, dict)
-        assert "**Summary**" in result["description"]
-        # Falls back to keeping existing action items
-        assert len(result["action_items"]) == 1
-
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
-    @patch("main.ChatAnthropic")
-    def test_reactions_update(self, mock_anthropic_cls):
-        mock_llm = MagicMock()
-        mock_anthropic_cls.return_value = mock_llm
-
-        mock_response = MagicMock()
-        mock_response.content = "**Summary**\nExisting summary.\n\n**Reactions**\nAlice liked your refactoring idea."
-        mock_llm.invoke.return_value = mock_response
-
-        current_desc = "**Summary**\nExisting summary.\n\n**Reactions**\nNo reactions yet."
-        result = processor.update_description_reactions(
-            current_desc, "Alice", "thumbsup", "Let's refactor auth"
-        )
-
-        assert "**Summary**" in result
-        assert "Alice" in result
-
-
-class TestReactionFiltering:
-    """Tests for reaction processing — only reacts on user's own messages."""
-
-    @patch.dict("os.environ", {
-        "ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t",
-        "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b",
-        "GMAIL_AI_STORAGE_BUCKET": "bucket", "GMAIL_AI_PROJECT_ID": "proj",
-    })
-    @patch("main.update_description_reactions")
-    @patch("main.requests")
-    def test_reaction_on_others_message_skipped(self, mock_requests, mock_update):
-        """Reactions on other people's messages should be skipped."""
-        # Mock Slack API responses
-        def mock_get(url, **kwargs):
-            resp = MagicMock()
-            resp.raise_for_status = MagicMock()
-            if "auth.test" in url:
-                resp.json.return_value = {"ok": True, "user_id": "U_ME"}
-            elif "conversations.history" in url:
-                resp.json.return_value = {"ok": True, "messages": [
-                    {"user": "U_OTHER", "text": "someone else's message"}
-                ]}
-            else:
-                resp.json.return_value = {"ok": True}
-            return resp
-        mock_requests.get.side_effect = mock_get
-
-        slack = processor.SlackClient()
-        trello = MagicMock()
-        cards = []
-        list_map = {}
-
-        events = [{
-            "event": {
-                "type": "reaction_added",
-                "user": "U_REACTOR",
-                "reaction": "thumbsup",
-                "item": {"channel": "C123", "ts": "111.222"},
-            },
-            "trace_id": "test-trace",
-        }]
-
-        processor.process_reactions(events, slack, trello, cards, list_map, "batch-trace")
-        mock_update.assert_not_called()
-
-    @patch.dict("os.environ", {
-        "ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t",
-        "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b",
-        "GMAIL_AI_STORAGE_BUCKET": "bucket", "GMAIL_AI_PROJECT_ID": "proj",
-    })
-    @patch("main.update_description_reactions")
-    @patch("main.requests")
-    def test_reaction_on_my_message_processed(self, mock_requests, mock_update):
-        """Reactions on my messages should update the card description."""
-        mock_update.return_value = "**Summary**\ntest\n\n**Reactions**\nPositive."
-
-        def mock_get(url, **kwargs):
-            resp = MagicMock()
-            resp.raise_for_status = MagicMock()
-            if "auth.test" in url:
-                resp.json.return_value = {"ok": True, "user_id": "U_ME"}
-            elif "conversations.history" in url:
-                resp.json.return_value = {"ok": True, "messages": [
-                    {"user": "U_ME", "text": "my message"}
-                ]}
-            elif "users.info" in url:
-                resp.json.return_value = {"ok": True, "user": {"real_name": "Reactor"}}
-            elif "conversations.info" in url:
-                resp.json.return_value = {"ok": True, "channel": {"name": "general"}}
-            else:
-                resp.json.return_value = {"ok": True}
-            return resp
-        mock_requests.get.side_effect = mock_get
-
-        # Mock Trello
-        mock_trello = MagicMock()
-        cards = [{"id": "card1", "name": "Test Topic", "idList": "list1", "desc": "#general | summary"}]
-        list_map = {"list1": "Worth Reading"}
-
-        events = [{
-            "event": {
-                "type": "reaction_added",
-                "user": "U_REACTOR",
-                "reaction": "thumbsup",
-                "item": {"channel": "C123", "ts": "111.222"},
-            },
-            "trace_id": "test-trace",
-        }]
-
-        processor.process_reactions(events, MagicMock(
-            get_authed_user_id=MagicMock(return_value="U_ME"),
-            get_message=MagicMock(return_value={"user": "U_ME", "text": "my message"}),
-            get_user_name=MagicMock(return_value="Reactor"),
-            get_channel_name=MagicMock(return_value="general"),
-        ), mock_trello, cards, list_map, "batch-trace")
-
-        mock_update.assert_called_once()
-        mock_trello.update_card_desc.assert_called_once()
-
-
 class TestNewCardTracking:
     """Tests for batch-internal card deduplication."""
 
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
-    @patch("main.update_description_summary")
-    def test_second_message_reuses_card_from_batch(self, mock_summary):
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    def test_second_message_reuses_card_from_batch(self):
         """Two messages about the same new topic should use one card."""
-        mock_summary.return_value = {"description": "**Summary**\ntest\n\n**Reactions**\nNo reactions yet.", "action_items": []}
-
         mock_trello = MagicMock()
         mock_trello.get_list_id.return_value = "list1"
         mock_trello.create_card.return_value = {"id": "new_card_1"}
-        mock_trello.get_checklists.return_value = []
 
         cards = []
         list_map = {}
@@ -285,7 +115,7 @@ class TestNewCardTracking:
             "existing_topic_id": None,
             "topic_name": "New Feature",
             "priority": "worth_reading",
-            "action_items": [],
+            "description": "Discussion about a new feature.",
         }
         msg1 = {"sender": "Alice", "channel": "general", "text": "New feature idea", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
 
@@ -297,7 +127,7 @@ class TestNewCardTracking:
             "existing_topic_id": None,
             "topic_name": "New Feature",
             "priority": "worth_reading",
-            "action_items": [],
+            "description": "Discussion about a new feature.",
         }
         msg2 = {"sender": "Bob", "channel": "general", "text": "I agree on the feature", "channel_id": "C1", "user_id": "U2", "ts": "222.333"}
 
@@ -314,14 +144,10 @@ class TestNewCardTracking:
 class TestPriorityEscalation:
     """Tests for card escalation logic."""
 
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
-    @patch("main.update_description_summary")
-    def test_card_escalated_from_worth_reading_to_needs_response(self, mock_summary):
-        mock_summary.return_value = {"description": "**Summary**\ntest\n\n**Reactions**\nNo reactions yet.", "action_items": []}
-
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    def test_card_escalated_from_worth_reading_to_needs_response(self):
         mock_trello = MagicMock()
         mock_trello.get_list_id.return_value = "list_needs"
-        mock_trello.get_checklists.return_value = []
 
         cards = [{"id": "card1", "name": "Topic", "idList": "list_reading", "desc": "#general | stuff"}]
         list_map = {"list_reading": "Worth Reading", "list_needs": "Needs Response"}
@@ -334,21 +160,17 @@ class TestPriorityEscalation:
             "existing_topic_id": "card1",
             "topic_name": "Topic",
             "priority": "needs_response",
-            "action_items": [],
+            "description": "Someone needs Edward to respond.",
         }
         msg = {"sender": "Alice", "channel": "general", "text": "Can you review?", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
 
         processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, cards, list_map, {})
         mock_trello.move_card.assert_called_once_with("card1", "list_needs")
 
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
-    @patch("main.update_description_summary")
-    def test_card_not_demoted(self, mock_summary):
-        mock_summary.return_value = {"description": "**Summary**\ntest\n\n**Reactions**\nNo reactions yet.", "action_items": []}
-
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    def test_card_not_demoted(self):
         mock_trello = MagicMock()
         mock_trello.get_list_id.return_value = "list_reading"
-        mock_trello.get_checklists.return_value = []
 
         cards = [{"id": "card1", "name": "Topic", "idList": "list_needs", "desc": "#general | stuff"}]
         list_map = {"list_needs": "Needs Response", "list_reading": "Worth Reading"}
@@ -361,46 +183,12 @@ class TestPriorityEscalation:
             "existing_topic_id": "card1",
             "topic_name": "Topic",
             "priority": "worth_reading",
-            "action_items": [],
+            "description": "FYI update.",
         }
         msg = {"sender": "Alice", "channel": "general", "text": "FYI", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
 
         processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, cards, list_map, {})
         mock_trello.move_card.assert_not_called()
-
-
-class TestActionItemSync:
-    """Tests for checklist sync logic."""
-
-    def test_sync_adds_new_items(self):
-        mock_trello = MagicMock()
-        mock_trello.get_checklists.return_value = [{"id": "cl1", "checkItems": []}]
-
-        current = []
-        revised = [{"text": "Review PR", "completed": False}]
-
-        processor.sync_action_items(mock_trello, "card1", current, revised)
-        mock_trello.add_checklist_item.assert_called_once_with("cl1", "Review PR")
-
-    def test_sync_marks_completed(self):
-        mock_trello = MagicMock()
-        mock_trello.get_checklists.return_value = [{"id": "cl1", "checkItems": []}]
-
-        current = [{"id": "item1", "text": "Review PR", "completed": False}]
-        revised = [{"text": "Review PR", "completed": True}]
-
-        processor.sync_action_items(mock_trello, "card1", current, revised)
-        mock_trello.update_checklist_item.assert_called_once_with("card1", "item1", completed=True)
-
-    def test_sync_removes_obsolete(self):
-        mock_trello = MagicMock()
-        mock_trello.get_checklists.return_value = [{"id": "cl1", "checkItems": []}]
-
-        current = [{"id": "item1", "text": "Old task", "completed": False}]
-        revised = []
-
-        processor.sync_action_items(mock_trello, "card1", current, revised)
-        mock_trello.delete_checklist_item.assert_called_once_with("cl1", "item1")
 
 
 class TestThreadHandling:
@@ -409,15 +197,15 @@ class TestThreadHandling:
     def test_find_card_by_thread_ts(self):
         """Should find a card whose description contains the thread_ts marker."""
         cards = [
-            {"id": "card1", "desc": "**Summary**\nStuff\n\n**Threads**\n- [msg](link) `ts:111.222`"},
-            {"id": "card2", "desc": "**Summary**\nOther stuff"},
+            {"id": "card1", "desc": "Some description\n\n**Threads**\n- [msg](link) `ts:111.222`"},
+            {"id": "card2", "desc": "Other stuff"},
         ]
         assert processor.find_card_by_thread_ts(cards, "111.222")["id"] == "card1"
         assert processor.find_card_by_thread_ts(cards, "999.999") is None
 
     def test_append_thread_entry_new_section(self):
         """Should add a Threads section if none exists."""
-        desc = "**Summary**\nTest\n\n**Reactions**\nNo reactions yet."
+        desc = "Topic description here."
         result = processor.append_thread_entry(desc, "Alice", "general", "hello world", "https://link", "111.222")
         assert "**Threads**" in result
         assert '`ts:111.222`' in result
@@ -425,12 +213,12 @@ class TestThreadHandling:
 
     def test_append_thread_entry_existing_section(self):
         """Should append to existing Threads section."""
-        desc = "**Summary**\nTest\n\n**Threads**\n- [First](link1) `ts:111.222`"
+        desc = "Description\n\n**Threads**\n- [First](link1) `ts:111.222`"
         result = processor.append_thread_entry(desc, "Bob", "backend", "new msg", "https://link2", "333.444")
         assert '`ts:111.222`' in result
         assert '`ts:333.444`' in result
 
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
     def test_thread_reply_skips_classification(self):
         """Thread replies with a matching parent card should skip Opus."""
         mock_slack = MagicMock()
@@ -440,7 +228,7 @@ class TestThreadHandling:
         mock_trello = MagicMock()
         cards = [{
             "id": "card1", "name": "Topic", "idList": "list1",
-            "desc": "**Summary**\ntest\n\n**Threads**\n- [msg](link) `ts:111.222`",
+            "desc": "Description\n\n**Threads**\n- [msg](link) `ts:111.222`",
         }]
 
         msg = {
@@ -455,12 +243,12 @@ class TestThreadHandling:
         assert "thread reply" in mock_trello.add_comment.call_args[0][1]
         mock_trello.update_card_desc.assert_called_once()
 
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
     def test_thread_reply_no_parent_falls_back(self):
         """Thread replies with no matching parent should fall back to classification."""
         mock_slack = MagicMock()
         mock_trello = MagicMock()
-        cards = [{"id": "card1", "desc": "**Summary**\nno threads here"}]
+        cards = [{"id": "card1", "desc": "no threads here"}]
 
         msg = {
             "sender": "Bob", "channel": "general", "text": "agreed",
@@ -476,9 +264,8 @@ class TestThreadHandling:
 class TestNoiseClassification:
     """Tests for noise message handling."""
 
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
-    @patch("main.update_description_summary")
-    def test_noise_message_skips_trello(self, mock_summary):
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    def test_noise_message_skips_trello(self):
         """Messages classified as noise should not create cards or comments."""
         mock_trello = MagicMock()
         mock_slack = MagicMock()
@@ -487,7 +274,7 @@ class TestNoiseClassification:
             "existing_topic_id": None,
             "topic_name": "Thanks",
             "priority": "noise",
-            "action_items": [],
+            "description": "Noise.",
         }
         msg = {"sender": "Alice", "channel": "general", "text": "thanks!", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
 
@@ -495,11 +282,9 @@ class TestNoiseClassification:
 
         mock_trello.create_card.assert_not_called()
         mock_trello.add_comment.assert_not_called()
-        mock_summary.assert_not_called()
 
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
-    @patch("main.update_description_summary")
-    def test_noise_with_existing_topic_still_skips(self, mock_summary):
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    def test_noise_with_existing_topic_still_skips(self):
         """Even if noise is linked to an existing topic, it should be dropped."""
         mock_trello = MagicMock()
         mock_slack = MagicMock()
@@ -508,14 +293,98 @@ class TestNoiseClassification:
             "existing_topic_id": "card1",
             "topic_name": "Sprint",
             "priority": "noise",
-            "action_items": [],
+            "description": "Noise.",
         }
         msg = {"sender": "Bob", "channel": "general", "text": "ok!", "channel_id": "C1", "user_id": "U2", "ts": "222.333"}
 
         processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, [{"id": "card1", "name": "Sprint", "idList": "l1", "desc": ""}], {}, {})
 
         mock_trello.add_comment.assert_not_called()
-        mock_summary.assert_not_called()
+
+
+class TestActionItems:
+    """Tests for per-message action item checklist logic."""
+
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    def test_action_item_added_to_new_card(self):
+        """When Opus returns an action_item, it should be added as a checklist item."""
+        mock_trello = MagicMock()
+        mock_trello.get_list_id.return_value = "list1"
+        mock_trello.create_card.return_value = {"id": "card1"}
+        mock_trello.get_checklists.return_value = []
+        mock_trello.create_checklist.return_value = {"id": "cl1"}
+
+        mock_slack = MagicMock()
+        mock_slack.channel_link.return_value = "https://slack.com/archives/C1"
+        mock_slack.message_link.return_value = "https://slack.com/archives/C1/p111"
+
+        classification = {
+            "existing_topic_id": None,
+            "topic_name": "Auth PR",
+            "priority": "needs_response",
+            "description": "Alice needs Edward to review.",
+            "action_item": "Review auth PR",
+        }
+        msg = {"sender": "Alice", "channel": "backend", "text": "Can you review the auth PR?", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
+
+        processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, [], {}, {})
+
+        mock_trello.create_checklist.assert_called_once_with("card1")
+        mock_trello.add_checklist_item.assert_called_once_with("cl1", "Review auth PR")
+
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    def test_no_action_item_skips_checklist(self):
+        """When action_item is null, no checklist operations should happen."""
+        mock_trello = MagicMock()
+        mock_trello.get_list_id.return_value = "list1"
+        mock_trello.create_card.return_value = {"id": "card1"}
+
+        mock_slack = MagicMock()
+        mock_slack.channel_link.return_value = "https://slack.com/archives/C1"
+        mock_slack.message_link.return_value = "https://slack.com/archives/C1/p111"
+
+        classification = {
+            "existing_topic_id": None,
+            "topic_name": "Deploy update",
+            "priority": "worth_reading",
+            "description": "Bob deployed caching to staging.",
+            "action_item": None,
+        }
+        msg = {"sender": "Bob", "channel": "backend", "text": "Deployed caching to staging", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
+
+        processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, [], {}, {})
+
+        mock_trello.get_checklists.assert_not_called()
+        mock_trello.create_checklist.assert_not_called()
+        mock_trello.add_checklist_item.assert_not_called()
+
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
+    def test_action_item_added_to_existing_card(self):
+        """Action items on existing cards should use existing checklist if present."""
+        mock_trello = MagicMock()
+        mock_trello.get_list_id.return_value = "list1"
+        mock_trello.get_checklists.return_value = [{"id": "cl_existing", "checkItems": []}]
+
+        mock_slack = MagicMock()
+        mock_slack.channel_link.return_value = "https://slack.com/archives/C1"
+        mock_slack.message_link.return_value = "https://slack.com/archives/C1/p111"
+
+        cards = [{"id": "card1", "name": "Topic", "idList": "list1", "desc": "desc"}]
+        list_map = {"list1": "Needs Response"}
+
+        classification = {
+            "existing_topic_id": "card1",
+            "topic_name": "Topic",
+            "priority": "needs_response",
+            "description": "Follow-up needed.",
+            "action_item": "Respond to Alice re: timeline",
+        }
+        msg = {"sender": "Alice", "channel": "general", "text": "What's the timeline?", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
+
+        processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, cards, list_map, {})
+
+        mock_trello.create_checklist.assert_not_called()
+        mock_trello.add_checklist_item.assert_called_once_with("cl_existing", "Respond to Alice re: timeline")
 
 
 class TestShortMessageContext:
@@ -569,3 +438,106 @@ class TestShortMessageContext:
 
         assert result[0]["preceding_context"] == ""
         mock_slack.get_preceding_messages.assert_not_called()
+
+
+class TestDedup:
+    """Tests for 30-minute dedup logic."""
+
+    def test_get_last_dedup_time_returns_none_on_missing(self):
+        """Should return None if the dedup timestamp blob does not exist."""
+        with patch("main.storage.Client") as mock_client:
+            mock_blob = MagicMock()
+            mock_blob.download_as_text.side_effect = Exception("Not found")
+            mock_client.return_value.bucket.return_value.blob.return_value = mock_blob
+
+            result = processor.get_last_dedup_time()
+            assert result is None
+
+    def test_set_last_dedup_time_writes_to_gcs(self):
+        """Should write current ISO timestamp to GCS."""
+        with patch("main.storage.Client") as mock_client:
+            mock_blob = MagicMock()
+            mock_client.return_value.bucket.return_value.blob.return_value = mock_blob
+
+            processor.set_last_dedup_time()
+            mock_blob.upload_from_string.assert_called_once()
+            written = mock_blob.upload_from_string.call_args[0][0]
+            # Should be a valid ISO timestamp
+            datetime.fromisoformat(written)
+
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "test-key"})
+    @patch("main.ChatAnthropic")
+    def test_identify_duplicates_parses_groups(self, mock_anthropic_cls):
+        """Should parse Opus response into dedup groups."""
+        mock_llm = MagicMock()
+        mock_anthropic_cls.return_value = mock_llm
+
+        mock_response = MagicMock()
+        mock_response.content = json.dumps([{
+            "card_ids": ["card1", "card2"],
+            "merged_name": "Merged Topic",
+            "merged_description": "Combined description.",
+        }])
+        mock_llm.invoke.return_value = mock_response
+
+        cards = [
+            {"id": "card1", "name": "Topic A", "desc": "desc A", "comments_preview": ""},
+            {"id": "card2", "name": "Topic A v2", "desc": "desc A again", "comments_preview": ""},
+        ]
+
+        result = processor.identify_duplicates(cards)
+        assert len(result) == 1
+        assert result[0]["card_ids"] == ["card1", "card2"]
+
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "test-key"})
+    @patch("main.ChatAnthropic")
+    def test_identify_duplicates_empty_when_no_dupes(self, mock_anthropic_cls):
+        """Should return empty list when Opus finds no duplicates."""
+        mock_llm = MagicMock()
+        mock_anthropic_cls.return_value = mock_llm
+
+        mock_response = MagicMock()
+        mock_response.content = "[]"
+        mock_llm.invoke.return_value = mock_response
+
+        result = processor.identify_duplicates([
+            {"id": "card1", "name": "Topic A", "desc": "desc", "comments_preview": ""},
+        ])
+        assert result == []
+
+    def test_run_dedup_skips_when_not_due(self):
+        """Should skip dedup if last run was less than 30 minutes ago."""
+        with patch("main.get_last_dedup_time") as mock_get:
+            mock_get.return_value = datetime.now(tz=timezone.utc) - timedelta(minutes=10)
+            mock_trello = MagicMock()
+
+            processor.run_dedup_if_due(mock_trello, "batch-t")
+            mock_trello.get_cards.assert_not_called()
+
+    def test_run_dedup_runs_when_due(self):
+        """Should run dedup if last run was more than 30 minutes ago."""
+        with (
+            patch("main.get_last_dedup_time") as mock_get,
+            patch("main.set_last_dedup_time") as mock_set,
+            patch("main.identify_duplicates") as mock_identify,
+        ):
+            mock_get.return_value = datetime.now(tz=timezone.utc) - timedelta(minutes=45)
+            mock_identify.return_value = []  # no duplicates
+
+            mock_trello = MagicMock()
+            mock_trello.get_cards.return_value = [
+                {"id": "c1", "name": "T1", "idList": "l1", "desc": "d1"},
+                {"id": "c2", "name": "T2", "idList": "l1", "desc": "d2"},
+            ]
+            mock_trello.get_lists.return_value = [{"id": "l1", "name": "Worth Reading"}]
+            mock_trello.get_comments.return_value = []
+
+            processor.run_dedup_if_due(mock_trello, "batch-t")
+            mock_trello.get_cards.assert_called_once()
+            mock_identify.assert_called_once()
+            mock_set.assert_called_once()
+
+
+class TestTimestampConversion:
+    """Tests for _utc_to_ct timestamp conversion (if still present)."""
+    pass

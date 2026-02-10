@@ -208,7 +208,7 @@ def _build_trace_summary(trace_id: str, entries: list[dict]) -> dict:
 
     # Build display title
     if batch_messages is not None:
-        title = f"\U0001f4e6 Batch: {batch_messages} messages, {batch_reactions or 0} reactions"
+        title = f"\U0001f4e6 Batch: {batch_messages} messages"
     elif pipeline == "coach" and sms_mode == "morning":
         title = "Morning regimen card"
     elif pipeline == "coach" and text_preview:

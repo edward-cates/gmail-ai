@@ -2,10 +2,10 @@
 
 Reads all pending Slack events from Cloud Storage, classifies messages in a
 single Opus call, updates Trello cards, and cleans up processed events.
+Every 30 minutes, runs a dedup pass to merge duplicate topic cards.
 
 Models:
 - Opus 4.6: batch topic classification + matching (one call for all messages)
-- Haiku: card description summaries and reaction interpretation (per card)
 """
 
 import json
@@ -25,8 +25,7 @@ logger = logging.getLogger(__name__)
 
 # --- Model Config ---
 
-MODEL_CLASSIFY = "claude-sonnet-4-5"  # batch topic matching — one call for N messages
-MODEL_SUMMARIZE = "claude-3-5-haiku-20241022"  # description updates — cheap and fast
+MODEL_CLASSIFY = "claude-opus-4-6"  # batch topic matching — one call for N messages
 
 
 # --- Trello Client ---
@@ -48,22 +47,13 @@ class TrelloClient:
         return {"key": self.api_key, "token": self.token, **extra}
 
     def get_board_desc(self):
-        """Get the board description (used as user context/memory)."""
+        """Get the board description (used as user context — read-only)."""
         r = requests.get(
             f"{self.BASE_URL}/boards/{self.board_id}",
             params=self._params(fields="desc"),
         )
         r.raise_for_status()
         return r.json().get("desc", "")
-
-    def update_board_desc(self, desc):
-        """Update the board description."""
-        r = requests.put(
-            f"{self.BASE_URL}/boards/{self.board_id}",
-            params=self._params(desc=desc),
-        )
-        r.raise_for_status()
-        return r.json()
 
     def get_lists(self):
         """Get all lists on the board."""
@@ -174,24 +164,19 @@ class TrelloClient:
         r.raise_for_status()
         return r.json()
 
-    def update_checklist_item(self, card_id, check_item_id, completed=None, name=None):
-        """Update a checklist item (name and/or completion state)."""
-        params = self._params()
-        if completed is not None:
-            params["state"] = "complete" if completed else "incomplete"
-        if name is not None:
-            params["name"] = name
-        r = requests.put(
-            f"{self.BASE_URL}/cards/{card_id}/checkItem/{check_item_id}",
-            params=params,
+    def get_comments(self, card_id):
+        """Get all comments on a card, sorted by date."""
+        r = requests.get(
+            f"{self.BASE_URL}/cards/{card_id}/actions",
+            params=self._params(filter="commentCard"),
         )
         r.raise_for_status()
         return r.json()
 
-    def delete_checklist_item(self, checklist_id, check_item_id):
-        """Delete a checklist item."""
+    def delete_card(self, card_id):
+        """Delete a card permanently."""
         r = requests.delete(
-            f"{self.BASE_URL}/checklists/{checklist_id}/checkItems/{check_item_id}",
+            f"{self.BASE_URL}/cards/{card_id}",
             params=self._params(),
         )
         r.raise_for_status()
@@ -445,6 +430,36 @@ def delete_pending_events(events):
                 logger.warning(f"Failed to delete {blob_name}: {e}")
 
 
+# --- Dedup Tracking ---
+
+DEDUP_INTERVAL_MINUTES = 30
+DEDUP_TIMESTAMP_BLOB = "slack-dedup/last_run.txt"
+
+
+def get_last_dedup_time():
+    """Read the last dedup run timestamp from GCS. Returns None if never run."""
+    bucket_name = os.getenv("GMAIL_AI_STORAGE_BUCKET", "gmail-ai-logs")
+    project_id = os.getenv("GMAIL_AI_PROJECT_ID", "")
+    client = storage.Client(project=project_id)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(DEDUP_TIMESTAMP_BLOB)
+    try:
+        text = blob.download_as_text().strip()
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def set_last_dedup_time():
+    """Write the current time as the last dedup timestamp to GCS."""
+    bucket_name = os.getenv("GMAIL_AI_STORAGE_BUCKET", "gmail-ai-logs")
+    project_id = os.getenv("GMAIL_AI_PROJECT_ID", "")
+    client = storage.Client(project=project_id)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(DEDUP_TIMESTAMP_BLOB)
+    blob.upload_from_string(datetime.now(tz=timezone.utc).isoformat())  # noqa: UP017
+
+
 # --- Claude: Batch Classification (Opus 4.6) ---
 
 PRIORITY_TO_LIST = {
@@ -463,22 +478,22 @@ def batch_classify_messages(messages_with_context, existing_topics, user_context
     Args:
         messages_with_context: list of {idx, text, sender, channel}
         existing_topics: list of {id, name, list_name}
-        user_context: board description with user's context/memory
+        user_context: board description with user's context
         channel_context: dict of {channel_name: [{sender, text}, ...]} for conversation history
 
     Returns:
         list of classification dicts, one per message (in same order)
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    api_key = os.getenv("SLACK_AI_API_KEY")
     if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY not set")
+        raise ValueError("SLACK_AI_API_KEY not set")
 
     llm = ChatAnthropic(model=MODEL_CLASSIFY, api_key=api_key, max_tokens=8000)
 
     context_block = (
-        f"About me (use this to prioritize and group):\n{user_context}\n\n"
+        f"About me (Edward Cates — use this to prioritize and group):\n{user_context}\n\n"
         if user_context.strip()
-        else ""
+        else "About me: I am Edward Cates.\n\n"
     )
 
     topics_list = (
@@ -546,14 +561,18 @@ subject, not by channel or time.
 ## Priority
 
 For each message, assign a priority:
-- **needs_response**: someone is waiting on ME specifically to reply
-- **action_required**: I need to do something (review, approve, decide) but nobody's blocked
-- **worth_reading**: relevant info, no action needed from me
+- **needs_response**: someone is waiting on EDWARD CATES specifically to reply
+- **action_required**: EDWARD CATES needs to do something (review, approve, decide) but nobody's blocked
+- **worth_reading**: relevant info, no action needed from Edward — INCLUDING messages where
+  someone ELSE needs to act (even if Edward is mentioned or involved in the conversation)
 - **noted**: social/personal messages — kudos, life updates, what people are up to,
   congratulations, casual chatter that I'd want to see but isn't work-relevant
 - **noise**: zero informational value — "thanks!", "ok", emoji-only, "got it", "+1", "lol"
   HOWEVER: if preceding context shows someone is agreeing/consenting to something
   actionable, that is NOT noise — classify based on what they're agreeing to.
+
+IMPORTANT: "needs_response" and "action_required" are ONLY for items where Edward Cates
+personally must respond or take action. If someone else needs to act, use "worth_reading".
 
 ## Examples
 
@@ -590,11 +609,16 @@ Respond with a JSON array, one entry per message in the same order:
         "existing_topic_id": "card id or null",
         "topic_name": "emoji + short descriptive topic name (3-6 words), e.g. '🔍 Auth PR review'",
         "priority": "needs_response|action_required|worth_reading|noted|noise",
-        "action_items": ["action items directed at me, if any"],
-        "summary": "1-2 sentence summary of this message's contribution to the topic"
+        "description": "1-2 line description of this topic",
+        "action_item": "short concrete task for Edward, or null if none"
     }},
     ...
-]"""
+]
+
+IMPORTANT: "action_item" should be null for MOST messages. Only include one when THIS
+specific message creates a concrete task for Edward — e.g. "Review auth PR",
+"Respond to Alice re: deploy timeline", "Approve staging release". Keep it under 10 words.
+Do NOT invent tasks from general discussion or FYI messages."""
 
     response = llm.invoke(prompt)
     content = response.content.strip()
@@ -618,194 +642,6 @@ Respond with a JSON array, one entry per message in the same order:
     except (json.JSONDecodeError, IndexError) as e:
         logger.error(f"Failed to parse batch classification ({e}): {content[:500]}")
         raise ValueError(f"Opus returned unparseable response: {e}") from e
-
-
-# --- Claude: Description Updates (Haiku) ---
-
-
-def update_description_summary(current_desc, channel_name, new_message, sender_name, current_action_items=None):
-    """Use Haiku to update the Summary section and revise action items.
-
-    Args:
-        current_desc: current card description
-        channel_name: Slack channel name
-        new_message: the new message text
-        sender_name: who sent the message
-        current_action_items: list of {"text": str, "completed": bool} or None
-
-    Returns:
-        {"description": str, "action_items": [{"text": str, "completed": bool}]}
-    """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY not set")
-
-    llm = ChatAnthropic(model=MODEL_SUMMARIZE, api_key=api_key, max_tokens=1000)
-
-    action_items_block = "(none yet)"
-    if current_action_items:
-        lines = []
-        for item in current_action_items:
-            status = "done" if item.get("completed") else "open"
-            lines.append(f"- [{status}] {item['text']}")
-        action_items_block = "\n".join(lines)
-
-    prompt = f"""You maintain a Trello card that serves as a living brief for a Slack topic.
-The card has a description (three sections: **Summary**, **Reactions**, **Threads**)
-and a checklist of action items.
-
-Current card description:
----
-{current_desc or "(empty — this is a new card)"}
----
-
-Current action items:
-{action_items_block}
-
-A new message just arrived in #{channel_name}:
-- From: {sender_name}
-- Text: {new_message[:2000]}
-
-Do two things:
-1. Rewrite the **Summary** to incorporate this message. Keep it 1-3 sentences — dense, direct.
-   Preserve **Reactions** and **Threads** EXACTLY as-is (or add empty placeholders).
-2. Revise the action items: add new ones if the message creates tasks, mark completed ones as done
-   if the message resolves them, keep unchanged ones as-is. Action items should be concrete tasks
-   directed at me. Remove items only if they're clearly obsolete.
-
-Respond with JSON (no markdown fences):
-{{
-    "description": "**Summary**\\n...\\n\\n**Reactions**\\n...\\n\\n**Threads**\\n...",
-    "action_items": [
-        {{"text": "item text", "completed": false}},
-        ...
-    ]
-}}"""
-
-    response = llm.invoke(prompt)
-    content = response.content.strip()
-
-    try:
-        if "```" in content:
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-            content = content.strip()
-        result = json.loads(content)
-        if isinstance(result, dict) and "description" in result:
-            return result
-    except (json.JSONDecodeError, IndexError):
-        logger.warning(f"Failed to parse Haiku JSON, falling back: {content[:200]}")
-
-    # Fallback: treat entire response as description, keep action items unchanged
-    return {
-        "description": content,
-        "action_items": current_action_items or [],
-    }
-
-
-def update_description_reactions(current_desc, reactor_name, reaction_emoji, original_text):
-    """Use Haiku to update the Reactions section of a card description."""
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY not set")
-
-    llm = ChatAnthropic(model=MODEL_SUMMARIZE, api_key=api_key, max_tokens=600)
-
-    prompt = f"""You maintain a Trello card description that serves as a living brief for a Slack topic.
-The description has three sections: **Summary**, **Reactions**, and **Threads**.
-
-Current card description:
----
-{current_desc or "(empty)"}
----
-
-A new reaction just happened:
-- {reactor_name} reacted with :{reaction_emoji}:
-- On the message: "{original_text[:500]}"
-
-Update the **Reactions** section to incorporate this new reaction. The Reactions section should
-read as a brief, natural-language insight about how people are responding to what I'm saying —
-what's landing well and what isn't. Don't just list emojis; interpret the sentiment.
-Keep the **Summary** and **Threads** sections EXACTLY as-is.
-
-Output the full card description (all three sections):
-
-**Summary**
-(preserve existing summary exactly)
-
-**Reactions**
-(your updated reactions insight here)
-
-**Threads**
-(preserve existing EXACTLY — do NOT modify this section)"""
-
-    response = llm.invoke(prompt)
-    return response.content.strip()
-
-
-# --- Checklist Sync ---
-
-
-def get_current_action_items(trello, card_id):
-    """Read current checklist items from a Trello card.
-
-    Returns list of {"id": str, "text": str, "completed": bool}.
-    """
-    checklists = trello.get_checklists(card_id)
-    if not checklists:
-        return []
-    items = []
-    for item in checklists[0].get("checkItems", []):
-        items.append({
-            "id": item["id"],
-            "text": item["name"],
-            "completed": item["state"] == "complete",
-        })
-    return items
-
-
-def sync_action_items(trello, card_id, current_items, revised_items):
-    """Sync revised action items back to the Trello checklist.
-
-    Matches by text similarity. Adds new items, updates completion state,
-    removes items not in the revised list.
-    """
-    checklists = trello.get_checklists(card_id)
-    if not checklists and revised_items:
-        checklist = trello.create_checklist(card_id)
-        checklist_id = checklist["id"]
-    elif checklists:
-        checklist_id = checklists[0]["id"]
-    else:
-        return
-
-    # Index current items by text for matching
-    current_by_text = {item["text"].lower().strip(): item for item in current_items}
-
-    revised_texts = set()
-    for revised in revised_items:
-        text = revised.get("text", "").strip()
-        if not text:
-            continue
-        revised_texts.add(text.lower())
-        match = current_by_text.get(text.lower())
-
-        if match:
-            # Update completion state if changed
-            if match["completed"] != revised.get("completed", False):
-                trello.update_checklist_item(card_id, match["id"], completed=revised["completed"])
-        else:
-            # New item
-            trello.add_checklist_item(checklist_id, text)
-
-    # Remove items no longer in the revised list
-    for item in current_items:
-        if item["text"].lower().strip() not in revised_texts:
-            try:
-                trello.delete_checklist_item(checklist_id, item["id"])
-            except Exception:
-                pass  # Non-critical if delete fails
 
 
 # --- Thread Tracking ---
@@ -835,59 +671,6 @@ def append_thread_entry(desc, sender, channel, text_preview, msg_link, message_t
     else:
         # Add new section
         return desc.rstrip() + f"\n\n**Threads**\n{entry}"
-
-
-# --- Board Context Memory (Haiku) ---
-
-
-def update_board_context(current_context, batch_summary):
-    """Use Haiku to update the board description with new observations.
-
-    Args:
-        current_context: current board description text
-        batch_summary: short summary of what was just processed
-
-    Returns:
-        updated board description string
-    """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        return current_context
-
-    llm = ChatAnthropic(model=MODEL_SUMMARIZE, api_key=api_key, max_tokens=800)
-
-    prompt = f"""You maintain a "memory" document about a Slack user — stored as a Trello board description.
-This helps an AI classify and prioritize their messages. The user can read and edit this anytime.
-
-Current memory:
----
-{current_context or "(empty — first time setup)"}
----
-
-Here's what just happened in the latest batch of Slack messages:
-{batch_summary}
-
-Update the memory to reflect any new insights. The memory should contain:
-- **Projects**: what the user is currently working on
-- **People**: key collaborators, their manager, their team
-- **Priorities**: what's urgent or important right now
-- **Ignore**: topics/channels the user doesn't care about
-
-Rules:
-- Keep it SHORT — under 15 lines total
-- Only add genuinely new information, don't repeat what's already there
-- Remove stale info if the batch contradicts it
-- Write in second person ("You are working on...", "Your team includes...")
-- If nothing new to add, return the current memory unchanged
-
-Output ONLY the updated memory text, nothing else."""
-
-    try:
-        response = llm.invoke(prompt)
-        return response.content.strip()
-    except Exception as e:
-        logger.warning(f"Failed to update board context: {e}")
-        return current_context
 
 
 # --- Structured Logging ---
@@ -1099,6 +882,17 @@ def process_messages(message_events, slack, trello, cards, list_map, batch_trace
             log_structured(batch_trace_id, "trello_action", "failure", {"error": str(e)})
 
 
+def _add_action_item(trello, card_id, action_item):
+    """Add a single action item to a card's checklist (create checklist if needed)."""
+    checklists = trello.get_checklists(card_id)
+    if checklists:
+        checklist_id = checklists[0]["id"]
+    else:
+        checklist = trello.create_checklist(card_id)
+        checklist_id = checklist["id"]
+    trello.add_checklist_item(checklist_id, action_item)
+
+
 def _apply_classification(classification, msg, trace_id, trello, slack, cards, list_map, new_cards_by_topic):
     """Apply a single classification result to Trello."""
     priority = classification.get("priority", "worth_reading")
@@ -1113,7 +907,7 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
 
     existing_topic_id = classification.get("existing_topic_id")
     topic_name = classification.get("topic_name", "Unclassified")
-    action_items = classification.get("action_items", [])
+    description = classification.get("description", "")
 
     channel_link = slack.channel_link(msg["channel_id"])
     msg_link = slack.message_link(msg["channel_id"], msg["ts"]) if msg.get("ts") else ""
@@ -1140,62 +934,30 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
             if target_idx < current_idx:
                 trello.move_card(card_id, target_list_id)
 
-        # Uncheck all completed checklist items (card is active again)
-        try:
-            for cl in trello.get_checklists(card_id):
-                for item in cl.get("checkItems", []):
-                    if item["state"] == "complete":
-                        trello.update_checklist_item(card_id, item["id"], completed=False)
-        except Exception as e:
-            logger.warning(f"[{trace_id}] Failed to uncheck items on {card_id}: {e}")
-
-        # Get current checklist items for Haiku to revise
-        current_items = get_current_action_items(trello, card_id)
-
-        # Merge Opus action items (from classification) into current items for Haiku
-        existing_texts = {item["text"].lower().strip() for item in current_items}
-        for item_text in action_items:
-            if item_text.lower().strip() not in existing_texts:
-                current_items.append({"text": item_text, "completed": False})
-
-        # Update description + action items via Haiku
+        # Append thread tracking entry
         current_desc = current_card.get("desc", "") if current_card else ""
-        result = update_description_summary(
-            current_desc, msg["channel"], msg["text"], msg["sender"],
-            current_action_items=current_items,
-        )
-        new_desc = result["description"]
-        revised_items = result.get("action_items", [])
-
-        # Add thread tracking entry
         new_desc = append_thread_entry(
-            new_desc, msg["sender"], msg["channel"],
+            current_desc, msg["sender"], msg["channel"],
             msg["text"], msg_link, msg["ts"],
         )
         trello.update_card_desc(card_id, new_desc)
         if current_card:
             current_card["desc"] = new_desc
 
-        # Sync action items
-        if current_items or revised_items:
-            sync_action_items(trello, card_id, current_items, revised_items)
+        # Add action item if Opus flagged one
+        action_item = classification.get("action_item")
+        if action_item:
+            try:
+                _add_action_item(trello, card_id, action_item)
+            except Exception as e:
+                logger.warning(f"[{trace_id}] Failed to add action item to {card_id}: {e}")
 
         log_structured(trace_id, "trello_update", "success", {
             "card_id": card_id, "topic": topic_name, "priority": priority,
         })
     else:
         # --- Create new card ---
-        # Seed with Opus action items
-        seed_items = [{"text": t, "completed": False} for t in action_items] if action_items else None
-
-        result = update_description_summary(
-            "", msg["channel"], msg["text"], msg["sender"],
-            current_action_items=seed_items,
-        )
-        initial_desc = result["description"]
-        revised_items = result.get("action_items", [])
-
-        # Add thread tracking entry
+        initial_desc = description
         initial_desc = append_thread_entry(
             initial_desc, msg["sender"], msg["channel"],
             msg["text"], msg_link, msg["ts"],
@@ -1204,11 +966,13 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
         card_id = card["id"]
         trello.add_comment(card_id, comment)
 
-        # Add action items to checklist
-        if revised_items:
-            checklist = trello.create_checklist(card_id)
-            for item in revised_items:
-                trello.add_checklist_item(checklist["id"], item.get("text", ""))
+        # Add action item if Opus flagged one
+        action_item = classification.get("action_item")
+        if action_item:
+            try:
+                _add_action_item(trello, card_id, action_item)
+            except Exception as e:
+                logger.warning(f"[{trace_id}] Failed to add action item to {card_id}: {e}")
 
         # Track for other messages in this batch
         new_cards_by_topic[topic_name] = card_id
@@ -1219,65 +983,222 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
         })
 
 
-# --- Process Reactions ---
+# --- Dedup: Merge Duplicate Topics ---
 
 
-def process_reactions(reaction_events, slack, trello, cards, list_map, batch_trace_id):
-    """Process reaction events — update Reactions section on matching cards."""
-    my_user_id = slack.get_authed_user_id()
+def identify_duplicates(cards_with_comments):
+    """Use Opus to identify groups of duplicate/overlapping topic cards.
 
-    for evt in reaction_events:
-        event = evt["event"]
-        user_id = event.get("user", "")
-        reaction = event.get("reaction", "")
-        item = event.get("item", {})
-        channel_id = item.get("channel", "")
-        message_ts = item.get("ts", "")
+    Args:
+        cards_with_comments: list of {id, name, desc, comments_preview}
 
-        # Fetch the reacted-to message
+    Returns:
+        list of groups: [{"card_ids": [...], "merged_name": str, "merged_description": str}, ...]
+    """
+    api_key = os.getenv("SLACK_AI_API_KEY")
+    if not api_key:
+        raise ValueError("SLACK_AI_API_KEY not set")
+
+    llm = ChatAnthropic(model=MODEL_CLASSIFY, api_key=api_key, max_tokens=4000)
+
+    cards_block = []
+    for c in cards_with_comments:
+        block = f'- [id:{c["id"]}] {c["name"]}\n  Description: {c["desc"][:300]}'
+        if c.get("comments_preview"):
+            block += f'\n  Recent comments: {c["comments_preview"][:200]}'
+        cards_block.append(block)
+
+    prompt = f"""You manage a Trello board that organizes Slack messages by topic.
+Some cards may cover the same or overlapping topics and should be merged.
+
+Current cards:
+{chr(10).join(cards_block)}
+
+Identify groups of cards that are about the SAME topic and should be merged.
+Only group cards that are clearly duplicates or substantially overlapping.
+Do NOT merge cards just because they are vaguely related.
+
+For each group, provide a merged name and a 1-2 line merged description.
+
+Respond with a JSON array (empty array [] if no duplicates found):
+[
+    {{
+        "card_ids": ["id1", "id2"],
+        "merged_name": "emoji + merged topic name",
+        "merged_description": "1-2 line merged description"
+    }},
+    ...
+]"""
+
+    response = llm.invoke(prompt)
+    content = response.content.strip()
+
+    try:
+        if "```" in content:
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+            content = content.strip()
+        if not content.startswith("["):
+            bracket_idx = content.find("[")
+            if bracket_idx >= 0:
+                content = content[bracket_idx:]
+        return json.loads(content)
+    except (json.JSONDecodeError, IndexError) as e:
+        logger.error(f"Failed to parse dedup response: {content[:500]}")
+        raise ValueError(f"Opus dedup returned unparseable response: {e}") from e
+
+
+def merge_card_group(trello, group, all_cards):
+    """Merge a group of duplicate cards into one new card.
+
+    1. Create new card with merged name + description
+    2. Fetch all comments from all cards in the group
+    3. Sort comments by date, recreate on new card in chronological order
+    4. Delete original cards
+
+    Returns the new card dict.
+    """
+    card_ids = group["card_ids"]
+    merged_name = group["merged_name"]
+    merged_desc = group["merged_description"]
+
+    # Determine the highest-priority list among the cards being merged
+    best_list_id = None
+    best_priority = 99
+    for card in all_cards:
+        if card["id"] in card_ids:
+            list_name = card.get("_list_name", "")
+            idx = PRIORITY_ORDER.index(list_name) if list_name in PRIORITY_ORDER else 99
+            if idx < best_priority:
+                best_priority = idx
+                best_list_id = card.get("idList")
+
+    if not best_list_id:
+        # Fallback: use the first card's list
+        for card in all_cards:
+            if card["id"] in card_ids:
+                best_list_id = card["idList"]
+                break
+
+    # Collect thread ts markers from all source cards
+    all_ts_markers = []
+    for card in all_cards:
+        if card["id"] in card_ids:
+            desc = card.get("desc", "")
+            for line in desc.split("\n"):
+                if "`ts:" in line:
+                    all_ts_markers.append(line.strip())
+
+    # Build merged description with thread markers
+    if all_ts_markers:
+        merged_desc = merged_desc.rstrip() + "\n\n**Threads**\n" + "\n".join(all_ts_markers)
+
+    # Create the merged card
+    new_card = trello.create_card(best_list_id, merged_name, desc=merged_desc)
+    new_card_id = new_card["id"]
+
+    # Collect all comments from all cards, sorted by date
+    all_comments = []
+    for card_id in card_ids:
         try:
-            msg = slack.get_message(channel_id, message_ts)
-            if not msg:
-                log_structured(batch_trace_id, "skip", metadata={"reason": "reaction: message_not_found"})
-                continue
-            if msg.get("user") != my_user_id:
-                log_structured(batch_trace_id, "skip", metadata={"reason": "reaction: not_my_message"})
-                continue
-            original_text = msg.get("text", "")[:500]
+            comments = trello.get_comments(card_id)
+            for c in comments:
+                all_comments.append({
+                    "date": c.get("date", ""),
+                    "text": c.get("data", {}).get("text", ""),
+                })
         except Exception as e:
-            logger.warning(f"Failed to fetch reacted message: {e}")
-            continue
+            logger.warning(f"Failed to fetch comments for card {card_id}: {e}")
 
-        # Resolve names
+    # Sort by date (oldest first) and recreate on new card
+    all_comments.sort(key=lambda c: c["date"])
+    for comment in all_comments:
+        if comment["text"]:
+            try:
+                trello.add_comment(new_card_id, comment["text"])
+            except Exception as e:
+                logger.warning(f"Failed to add merged comment: {e}")
+
+    # Delete original cards
+    for card_id in card_ids:
         try:
-            reactor_name = slack.get_user_name(user_id)
-            channel_name = slack.get_channel_name(channel_id)
+            trello.delete_card(card_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete card {card_id} after merge: {e}")
+
+    return new_card
+
+
+def run_dedup_if_due(trello, batch_trace_id):
+    """Check if dedup is due (30+ min since last run), and if so, run it."""
+    last_run = get_last_dedup_time()
+    now = datetime.now(tz=timezone.utc)  # noqa: UP017
+
+    if last_run and (now - last_run) < timedelta(minutes=DEDUP_INTERVAL_MINUTES):
+        logger.info(f"Dedup not due yet (last run: {last_run.isoformat()})")
+        return
+
+    logger.info("Running dedup...")
+    cards = trello.get_cards()
+
+    if len(cards) < 2:
+        logger.info("Not enough cards for dedup")
+        set_last_dedup_time()
+        return
+
+    # Fetch list names for priority resolution
+    lists = trello.get_lists()
+    list_map = {lst["id"]: lst["name"] for lst in lists}
+    for card in cards:
+        card["_list_name"] = list_map.get(card["idList"], "")
+
+    # Build cards with comment previews
+    cards_with_comments = []
+    for card in cards:
+        comments_preview = ""
+        try:
+            comments = trello.get_comments(card["id"])
+            if comments:
+                previews = [c.get("data", {}).get("text", "")[:100] for c in comments[:3]]
+                comments_preview = " | ".join(previews)
         except Exception:
-            reactor_name = user_id
-            channel_name = channel_id
+            pass
+        cards_with_comments.append({
+            "id": card["id"],
+            "name": card["name"],
+            "desc": card.get("desc", ""),
+            "comments_preview": comments_preview,
+        })
 
-        # Find matching card
-        matching_cards = [
-            c for c in cards
-            if f"#{channel_name}" in (c.get("desc") or "")
-        ]
+    try:
+        groups = identify_duplicates(cards_with_comments)
+    except Exception as e:
+        logger.error(f"Dedup identification failed: {e}")
+        set_last_dedup_time()
+        return
 
-        if not matching_cards:
-            log_structured(batch_trace_id, "skip", metadata={"reason": "reaction: no_matching_card"})
-            continue
+    if not groups:
+        logger.info("No duplicates found")
+        set_last_dedup_time()
+        return
 
-        card = matching_cards[0]
-        current_desc = card.get("desc", "")
+    log_structured(batch_trace_id, "dedup_start", metadata={"groups": len(groups)})
 
+    for group in groups:
         try:
-            new_desc = update_description_reactions(current_desc, reactor_name, reaction, original_text)
-            trello.update_card_desc(card["id"], new_desc)
-            log_structured(batch_trace_id, "trello_update", "success", {
-                "card_id": card["id"], "reaction": reaction,
+            new_card = merge_card_group(trello, group, cards)
+            log_structured(batch_trace_id, "dedup_merge", "success", {
+                "merged_cards": group["card_ids"],
+                "new_card_id": new_card["id"],
+                "merged_name": group["merged_name"],
             })
         except Exception as e:
-            logger.error(f"Failed to update reaction on card: {e}")
-            log_structured(batch_trace_id, "trello_action", "failure", {"error": str(e)})
+            logger.error(f"Failed to merge group {group.get('merged_name')}: {e}")
+            log_structured(batch_trace_id, "dedup_merge", "failure", {"error": str(e)})
+
+    set_last_dedup_time()
+    log_structured(batch_trace_id, "dedup_complete", metadata={"groups_merged": len(groups)})
 
 
 # --- Main ---
@@ -1303,14 +1224,12 @@ def main():
     delete_pending_events(pending)
     log_structured(batch_trace_id, "queue_cleared", metadata={"count": len(pending)})
 
-    # Separate messages from reactions
+    # Filter to messages only (ignore reactions)
     messages = [e for e in pending if e["event"].get("type") != "reaction_added"]
-    reactions = [e for e in pending if e["event"].get("type") == "reaction_added"]
 
     log_structured(batch_trace_id, "batch_start", metadata={
         "total_events": len(pending),
         "messages": len(messages),
-        "reactions": len(reactions),
     })
 
     # Initialize clients
@@ -1336,51 +1255,18 @@ def main():
             batch_trace_id, user_context=user_context,
         )
 
-    # Process reactions (Haiku only, per reaction)
-    if reactions:
-        process_reactions(reactions, slack, trello, cards, list_map, batch_trace_id)
-
-    # Update board context memory with observations from this batch
-    if messages:
-        try:
-            batch_summary = _build_batch_summary(messages, slack)
-            new_context = update_board_context(user_context, batch_summary)
-            if new_context != user_context:
-                trello.update_board_desc(new_context)
-                log_structured(batch_trace_id, "context_updated")
-        except Exception as e:
-            logger.warning(f"Failed to update board context: {e}")
+    # Run dedup every 30 minutes
+    try:
+        run_dedup_if_due(trello, batch_trace_id)
+    except Exception as e:
+        logger.warning(f"Dedup failed: {e}")
 
     total_secs = round(time.time() - batch_start_time, 1)
     logger.info(f"Batch complete. Processed {len(pending)} events in {total_secs}s.")
     log_structured(batch_trace_id, "batch_complete", metadata={
-        "messages": len(messages), "reactions": len(reactions),
+        "messages": len(messages),
         "total_secs": total_secs,
     })
-
-
-def _build_batch_summary(message_events, slack):
-    """Build a short summary of the batch for context updates."""
-    lines = []
-    channels_seen = set()
-    people_seen = set()
-    for evt in message_events[:20]:  # Cap to avoid huge summaries
-        event = evt["event"]
-        user_id = event.get("user", "")
-        channel_id = event.get("channel", "")
-        text = event.get("text", "")[:100]
-        try:
-            name = slack.get_user_name(user_id)
-            channel = slack.get_channel_name(channel_id)
-        except Exception:
-            name = user_id
-            channel = channel_id
-        people_seen.add(name)
-        channels_seen.add(channel)
-        lines.append(f"- {name} in #{channel}: {text}")
-
-    header = f"Channels: {', '.join(channels_seen)}. People: {', '.join(people_seen)}."
-    return header + "\n" + "\n".join(lines)
 
 
 if __name__ == "__main__":
