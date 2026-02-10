@@ -391,12 +391,11 @@ class TestActionItems:
 
 
 class TestMentionedLabel:
-    """Tests for 'Mentioned' label tagging."""
+    """Tests for 'Mentioned' label tagging based on user_id matching."""
 
     @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
-    def test_mentioned_adds_label_to_new_card(self):
-        """When mentioned=true, the card should get the Mentioned label."""
-        # Reset cached label ID
+    def test_my_message_adds_label_to_new_card(self):
+        """When message is from the authed user, the card should get the Mentioned label."""
         processor._mentioned_label_id = None
 
         mock_trello = MagicMock()
@@ -405,6 +404,7 @@ class TestMentionedLabel:
         mock_trello.get_board_labels.return_value = [{"id": "lbl1", "name": "Mentioned"}]
 
         mock_slack = MagicMock()
+        mock_slack.get_authed_user_id.return_value = "UEDWARD"
         mock_slack.channel_link.return_value = "https://slack.com/archives/C1"
         mock_slack.message_link.return_value = "https://slack.com/archives/C1/p111"
 
@@ -412,18 +412,17 @@ class TestMentionedLabel:
             "existing_topic_id": None,
             "topic_name": "Auth PR",
             "priority": "needs_response",
-            "description": "Alice tagged Edward for review.",
-            "mentioned": True,
+            "description": "Edward asked about auth PR.",
         }
-        msg = {"sender": "Alice", "channel": "backend", "text": "Hey @Edward can you review?", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
+        msg = {"sender": "Edward", "channel": "backend", "text": "Can someone review the auth PR?", "channel_id": "C1", "user_id": "UEDWARD", "ts": "111.222"}
 
         processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, [], {}, {})
 
         mock_trello.add_label_to_card.assert_called_once_with("card1", "lbl1")
 
     @patch.dict("os.environ", {"SLACK_AI_API_KEY": "k", "SLACK_BOT_TOKEN": "t", "TRELLO_API_KEY": "k", "TRELLO_TOKEN": "t", "TRELLO_BOARD_ID": "b"})
-    def test_not_mentioned_skips_label(self):
-        """When mentioned=false, no label should be added."""
+    def test_other_user_message_skips_label(self):
+        """When message is from someone else, no label should be added."""
         processor._mentioned_label_id = None
 
         mock_trello = MagicMock()
@@ -431,6 +430,7 @@ class TestMentionedLabel:
         mock_trello.create_card.return_value = {"id": "card1"}
 
         mock_slack = MagicMock()
+        mock_slack.get_authed_user_id.return_value = "UEDWARD"
         mock_slack.channel_link.return_value = "https://slack.com/archives/C1"
         mock_slack.message_link.return_value = "https://slack.com/archives/C1/p111"
 
@@ -439,9 +439,8 @@ class TestMentionedLabel:
             "topic_name": "Deploy update",
             "priority": "worth_reading",
             "description": "Bob deployed to staging.",
-            "mentioned": False,
         }
-        msg = {"sender": "Bob", "channel": "backend", "text": "Deployed to staging", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
+        msg = {"sender": "Bob", "channel": "backend", "text": "Deployed to staging", "channel_id": "C1", "user_id": "UBOB", "ts": "111.222"}
 
         processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, [], {}, {})
 
@@ -460,6 +459,7 @@ class TestMentionedLabel:
         mock_trello.create_label.return_value = {"id": "new_lbl"}
 
         mock_slack = MagicMock()
+        mock_slack.get_authed_user_id.return_value = "UEDWARD"
         mock_slack.channel_link.return_value = "https://slack.com/archives/C1"
         mock_slack.message_link.return_value = "https://slack.com/archives/C1/p111"
 
@@ -467,10 +467,9 @@ class TestMentionedLabel:
             "existing_topic_id": None,
             "topic_name": "Question",
             "priority": "needs_response",
-            "description": "Direct question to Edward.",
-            "mentioned": True,
+            "description": "Edward asked a question.",
         }
-        msg = {"sender": "Alice", "channel": "general", "text": "@Edward thoughts?", "channel_id": "C1", "user_id": "U1", "ts": "111.222"}
+        msg = {"sender": "Edward", "channel": "general", "text": "Thoughts on this?", "channel_id": "C1", "user_id": "UEDWARD", "ts": "111.222"}
 
         processor._apply_classification(classification, msg, "t1", mock_trello, mock_slack, [], {}, {})
 

@@ -122,6 +122,12 @@ class TrelloClient:
         r.raise_for_status()
         return r.json()
 
+    def update_card_name(self, card_id, name):
+        """Update card title."""
+        r = requests.put(f"{self.BASE_URL}/cards/{card_id}", params=self._params(name=name))
+        r.raise_for_status()
+        return r.json()
+
     def move_card(self, card_id, list_id):
         """Move a card to a different list."""
         r = requests.put(f"{self.BASE_URL}/cards/{card_id}", params=self._params(idList=list_id))
@@ -637,8 +643,7 @@ Respond with a JSON array, one entry per message in the same order:
         "topic_name": "emoji + specific concrete title (3-8 words) — use real names, details, and specifics, NOT abstract summaries. e.g. '🔍 Alice needs auth PR review', '📅 Planning meeting @ 2p Tues', '🎵 Ryman shared Disco Disco'",
         "priority": "needs_response|action_required|worth_reading|noted|noise",
         "description": "1-2 line description of this topic",
-        "action_item": "short concrete task for Edward, or null if none",
-        "mentioned": true or false
+        "action_item": "short concrete task for Edward, or null if none"
     }},
     ...
 ]
@@ -646,11 +651,7 @@ Respond with a JSON array, one entry per message in the same order:
 "action_item" should be null for MOST messages. Only include one when THIS specific message
 creates a concrete task for Edward — e.g. "Review auth PR", "Respond to Alice re: deploy
 timeline", "Approve staging release". Keep it under 10 words. Do NOT invent tasks from
-general discussion or FYI messages.
-
-"mentioned" is true when this message involves Edward Cates — he is directly mentioned,
-tagged, addressed by name, or the message is a reply to something Edward said, answers his
-question, or is part of a conversation directed at him. False otherwise."""
+general discussion or FYI messages."""
 
     response = llm.invoke(prompt)
     content = response.content.strip()
@@ -964,6 +965,9 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
     topic_name = classification.get("topic_name", "Unclassified")
     description = classification.get("description", "")
 
+    # Determine if Edward is involved (deterministic — no LLM needed)
+    is_my_message = msg.get("user_id") == slack.get_authed_user_id()
+
     channel_link = slack.channel_link(msg["channel_id"])
     msg_link = slack.message_link(msg["channel_id"], msg["ts"]) if msg.get("ts") else ""
 
@@ -980,8 +984,13 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
         card_id = existing_topic_id
         trello.add_comment(card_id, comment)
 
-        # Escalate if needed
+        # Update title and description to Opus's latest
         current_card = next((c for c in cards if c["id"] == card_id), None)
+        trello.update_card_name(card_id, topic_name)
+        if current_card:
+            current_card["name"] = topic_name
+
+        # Escalate if needed
         if current_card:
             current_list = list_map.get(current_card["idList"], "")
             current_idx = PRIORITY_ORDER.index(current_list) if current_list in PRIORITY_ORDER else 99
@@ -989,10 +998,16 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
             if target_idx < current_idx:
                 trello.move_card(card_id, target_list_id)
 
-        # Append thread tracking entry
+        # Update description (Opus description + thread tracking)
         current_desc = current_card.get("desc", "") if current_card else ""
+        # Replace the description text above **Threads**, keep threads section
+        if "**Threads**" in current_desc:
+            threads_section = current_desc[current_desc.index("**Threads**"):]
+            new_desc = description + "\n\n" + threads_section
+        else:
+            new_desc = description
         new_desc = append_thread_entry(
-            current_desc, msg["sender"], msg["channel"],
+            new_desc, msg["sender"], msg["channel"],
             msg["text"], msg_link, msg["ts"],
         )
         trello.update_card_desc(card_id, new_desc)
@@ -1007,8 +1022,8 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
             except Exception as e:
                 logger.warning(f"[{trace_id}] Failed to add action item to {card_id}: {e}")
 
-        # Tag card if Edward was mentioned
-        if classification.get("mentioned"):
+        # Tag card if Edward sent this message
+        if is_my_message:
             try:
                 label_id = _get_mentioned_label_id(trello)
                 trello.add_label_to_card(card_id, label_id)
@@ -1037,8 +1052,8 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
             except Exception as e:
                 logger.warning(f"[{trace_id}] Failed to add action item to {card_id}: {e}")
 
-        # Tag card if Edward was mentioned
-        if classification.get("mentioned"):
+        # Tag card if Edward sent this message
+        if is_my_message:
             try:
                 label_id = _get_mentioned_label_id(trello)
                 trello.add_label_to_card(card_id, label_id)
