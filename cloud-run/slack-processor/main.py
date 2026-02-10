@@ -634,7 +634,7 @@ Respond with a JSON array, one entry per message in the same order:
     {{
         "msg_idx": 1,
         "existing_topic_id": "card id or null",
-        "topic_name": "emoji + short descriptive topic name (3-6 words), e.g. '🔍 Auth PR review'",
+        "topic_name": "emoji + specific concrete title (3-8 words) — use real names, details, and specifics, NOT abstract summaries. e.g. '🔍 Alice needs auth PR review', '📅 Planning meeting @ 2p Tues', '🎵 Ryman shared Disco Disco'",
         "priority": "needs_response|action_required|worth_reading|noted|noise",
         "description": "1-2 line description of this topic",
         "action_item": "short concrete task for Edward, or null if none",
