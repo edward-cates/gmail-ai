@@ -584,12 +584,11 @@ CRITICAL: Topics must describe SUBJECT MATTER, never channels.
 - WRONG: "backend discussion", "#design-reviews chat", "general updates"
 - RIGHT: "Auth module refactor", "Q2 hiring plan", "Production outage Jan 15"
 
-Messages from DIFFERENT channels often belong to the SAME topic (e.g. someone discusses
-a deploy in #backend and #general — that's one topic). Messages in the SAME channel
-are often about DIFFERENT topics.
+Topics are channel-specific — NEVER group messages from different channels into the
+same topic, even if the subject matter overlaps. Messages in the SAME channel are
+often about DIFFERENT topics.
 
-Prefer matching to existing topics over creating new ones — group aggressively by
-subject, not by channel or time.
+Prefer matching to existing topics in the same channel over creating new ones.
 
 ## Priority
 
