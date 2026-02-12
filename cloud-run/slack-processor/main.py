@@ -324,7 +324,8 @@ class SlackClient:
                 else:
                     name = "DM"
             elif ch.get("is_mpim"):
-                name = ch.get("purpose", {}).get("value") or ch.get("name", channel_id)
+                group_name = ch.get("purpose", {}).get("value") or ch.get("name", channel_id)
+                name = f"DM group: {group_name}"
             else:
                 name = ch.get("name", channel_id)
         self._channel_cache[channel_id] = name
@@ -807,6 +808,14 @@ def _process_thread_reply(msg, slack, trello, cards, batch_trace_id):
         except Exception as e:
             logger.warning(f"Failed to add mentioned label to {card['id']}: {e}")
 
+    # Tag DM cards
+    if msg.get("channel", "").startswith("DM"):
+        try:
+            label_id = _get_dm_label_id(trello)
+            trello.add_label_to_card(card["id"], label_id)
+        except Exception as e:
+            logger.warning(f"Failed to add DM label to {card['id']}: {e}")
+
     # Add this reply's ts to threads section too
     current_desc = card.get("desc", "")
     new_desc = append_thread_entry(
@@ -944,6 +953,24 @@ def _get_mentioned_label_id(trello):
     return _mentioned_label_id
 
 
+_dm_label_id = None
+
+
+def _get_dm_label_id(trello):
+    """Get or create the 'DM' label on the board (cached)."""
+    global _dm_label_id  # noqa: PLW0603
+    if _dm_label_id:
+        return _dm_label_id
+    labels = trello.get_board_labels()
+    for label in labels:
+        if label.get("name") == "DM":
+            _dm_label_id = label["id"]
+            return _dm_label_id
+    new_label = trello.create_label("DM", color="blue")
+    _dm_label_id = new_label["id"]
+    return _dm_label_id
+
+
 def _add_action_item(trello, card_id, action_item):
     """Add a single action item to a card's checklist (create checklist if needed)."""
     checklists = trello.get_checklists(card_id)
@@ -1036,6 +1063,14 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
             except Exception as e:
                 logger.warning(f"[{trace_id}] Failed to add mentioned label to {card_id}: {e}")
 
+        # Tag DM cards
+        if msg.get("channel", "").startswith("DM"):
+            try:
+                label_id = _get_dm_label_id(trello)
+                trello.add_label_to_card(card_id, label_id)
+            except Exception as e:
+                logger.warning(f"[{trace_id}] Failed to add DM label to {card_id}: {e}")
+
         log_structured(trace_id, "trello_update", "success", {
             "card_id": card_id, "topic": topic_name, "priority": priority,
         })
@@ -1065,6 +1100,14 @@ def _apply_classification(classification, msg, trace_id, trello, slack, cards, l
                 trello.add_label_to_card(card_id, label_id)
             except Exception as e:
                 logger.warning(f"[{trace_id}] Failed to add mentioned label to {card_id}: {e}")
+
+        # Tag DM cards
+        if msg.get("channel", "").startswith("DM"):
+            try:
+                label_id = _get_dm_label_id(trello)
+                trello.add_label_to_card(card_id, label_id)
+            except Exception as e:
+                logger.warning(f"[{trace_id}] Failed to add DM label to {card_id}: {e}")
 
         # Track for other messages in this batch
         new_cards_by_topic[topic_name] = card_id
