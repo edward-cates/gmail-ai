@@ -109,6 +109,15 @@ class TrelloClient:
         r.raise_for_status()
         return r.json()
 
+    def archive_card(self, card_id):
+        """Archive (close) a card."""
+        r = requests.put(
+            f"{self.BASE_URL}/cards/{card_id}",
+            params=self._params(closed="true"),
+        )
+        r.raise_for_status()
+        return r.json()
+
     def create_card(self, list_id, name, desc=""):
         """Create a new card."""
         params = self._params(idList=list_id, name=name, desc=desc, pos="top")
@@ -196,6 +205,14 @@ class TrelloClient:
         )
         r.raise_for_status()
         return r.json()
+
+    def remove_label_from_card(self, card_id, label_id):
+        """Remove a label from a card."""
+        r = requests.delete(
+            f"{self.BASE_URL}/cards/{card_id}/idLabels/{label_id}",
+            params=self._params(),
+        )
+        r.raise_for_status()
 
     def get_comments(self, card_id):
         """Get all comments on a card, sorted by date."""
@@ -491,6 +508,37 @@ def set_last_dedup_time():
     client = storage.Client(project=project_id)
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(DEDUP_TIMESTAMP_BLOB)
+    blob.upload_from_string(datetime.now(tz=timezone.utc).isoformat())  # noqa: UP017
+
+
+# --- Decay Tracking ---
+
+DECAY_INTERVAL_MINUTES = 30
+DECAY_TIMESTAMP_BLOB = "slack-decay/last_run.txt"
+DECAY_LOW_PRIORITY_HOURS = 24  # Worth Reading/Noted decay after 24h inactivity
+
+
+def get_last_decay_time():
+    """Read the last decay run timestamp from GCS. Returns None if never run."""
+    bucket_name = os.getenv("GMAIL_AI_STORAGE_BUCKET", "gmail-ai-logs")
+    project_id = os.getenv("GMAIL_AI_PROJECT_ID", "")
+    client = storage.Client(project=project_id)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(DECAY_TIMESTAMP_BLOB)
+    try:
+        text = blob.download_as_text().strip()
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def set_last_decay_time():
+    """Write the current time as the last decay timestamp to GCS."""
+    bucket_name = os.getenv("GMAIL_AI_STORAGE_BUCKET", "gmail-ai-logs")
+    project_id = os.getenv("GMAIL_AI_PROJECT_ID", "")
+    client = storage.Client(project=project_id)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(DECAY_TIMESTAMP_BLOB)
     blob.upload_from_string(datetime.now(tz=timezone.utc).isoformat())  # noqa: UP017
 
 
@@ -971,6 +1019,24 @@ def _get_dm_label_id(trello):
     return _dm_label_id
 
 
+_stale_label_id = None
+
+
+def _get_stale_label_id(trello):
+    """Get or create the 'Stale' label on the board (cached)."""
+    global _stale_label_id  # noqa: PLW0603
+    if _stale_label_id:
+        return _stale_label_id
+    labels = trello.get_board_labels()
+    for label in labels:
+        if label.get("name") == "Stale":
+            _stale_label_id = label["id"]
+            return _stale_label_id
+    new_label = trello.create_label("Stale", color="yellow")
+    _stale_label_id = new_label["id"]
+    return _stale_label_id
+
+
 def _add_action_item(trello, card_id, action_item):
     """Add a single action item to a card's checklist (create checklist if needed)."""
     checklists = trello.get_checklists(card_id)
@@ -1336,6 +1402,268 @@ def run_dedup_if_due(trello, batch_trace_id):
     log_structured(batch_trace_id, "dedup_complete", metadata={"groups_merged": len(groups)})
 
 
+# --- Decay: Age-Based Card Movement + Stale Flagging ---
+
+
+def _parse_card_age(card, now):
+    """Parse dateLastActivity and return age as timedelta, or None on error."""
+    last_activity = card.get("dateLastActivity", "")
+    try:
+        dt = datetime.fromisoformat(last_activity.replace("Z", "+00:00"))
+        return now - dt
+    except (ValueError, TypeError):
+        return None
+
+
+def decay_low_priority_cards(trello, cards, list_map, batch_trace_id):
+    """Move stale low-priority cards down: Worth Reading -> Noted -> Archive.
+
+    Pure time-based, no AI involved.
+    """
+    now = datetime.now(tz=timezone.utc)  # noqa: UP017
+    cutoff = timedelta(hours=DECAY_LOW_PRIORITY_HOURS)
+
+    noted_list_id = None
+    moved_to_noted = 0
+    archived = 0
+
+    for card in cards:
+        card_list = list_map.get(card.get("idList"), "")
+        age = _parse_card_age(card, now)
+        if age is None or age < cutoff:
+            continue
+
+        if card_list == "Worth Reading":
+            if noted_list_id is None:
+                noted_list_id = trello.get_list_id("Noted")
+            try:
+                trello.move_card(card["id"], noted_list_id)
+                moved_to_noted += 1
+                logger.info(f"Decay: moved '{card['name']}' Worth Reading -> Noted (age: {age})")
+            except Exception as e:
+                logger.warning(f"Decay: failed to move card {card['id']} to Noted: {e}")
+
+        elif card_list == "Noted":
+            try:
+                trello.archive_card(card["id"])
+                archived += 1
+                logger.info(f"Decay: archived '{card['name']}' from Noted (age: {age})")
+            except Exception as e:
+                logger.warning(f"Decay: failed to archive card {card['id']}: {e}")
+
+    if moved_to_noted or archived:
+        log_structured(batch_trace_id, "decay_low_priority", metadata={
+            "moved_to_noted": moved_to_noted,
+            "archived": archived,
+        })
+
+    return moved_to_noted, archived
+
+
+def identify_stale_cards(cards_for_review):
+    """Use Opus to identify which high-priority cards are stale/resolved.
+
+    Args:
+        cards_for_review: list of {id, name, desc, list_name, comments_text}
+
+    Returns:
+        list of card IDs that Opus judges as stale.
+    """
+    api_key = os.getenv("SLACK_AI_API_KEY")
+    if not api_key:
+        raise ValueError("SLACK_AI_API_KEY not set")
+
+    llm = ChatAnthropic(model=MODEL_CLASSIFY, api_key=api_key, max_tokens=4000)
+
+    cards_block = []
+    for c in cards_for_review:
+        block = f'- [id:{c["id"]}] "{c["name"]}" (in: {c["list_name"]})\n  Description: {c["desc"][:400]}'
+        if c.get("comments_text"):
+            block += f'\n  Comments:\n{c["comments_text"]}'
+        cards_block.append(block)
+
+    prompt = f"""You manage a Trello board that organizes Edward Cates's Slack messages by topic.
+The following cards are in high-priority lists ("Needs Response" or "Action Required").
+Your job is to judge whether each card is still genuinely waiting on Edward,
+or whether it has been resolved / gone stale.
+
+Cards to review:
+{chr(10).join(cards_block)}
+
+For each card, decide:
+- **still_active**: Edward still needs to respond or take action. Someone is waiting.
+- **stale**: The conversation moved on, Edward already responded and the ball is in
+  someone else's court, the topic was resolved elsewhere, is no longer relevant,
+  or nobody is actually waiting on Edward anymore.
+
+Be CONSERVATIVE: if there is any doubt, mark it as still_active. Only mark stale
+when you are confident the item no longer needs Edward's attention.
+
+Respond with a JSON array of objects, one per card:
+[
+    {{
+        "card_id": "the card id",
+        "verdict": "still_active" or "stale",
+        "reason": "one-line explanation"
+    }},
+    ...
+]"""
+
+    response = llm.invoke(prompt)
+    content = response.content.strip()
+
+    try:
+        if "```" in content:
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+            content = content.strip()
+        if not content.startswith("["):
+            bracket_idx = content.find("[")
+            if bracket_idx >= 0:
+                content = content[bracket_idx:]
+        results = json.loads(content)
+    except (json.JSONDecodeError, IndexError) as e:
+        logger.error(f"Failed to parse stale review response: {content[:500]}")
+        raise ValueError(f"Opus stale review returned unparseable response: {e}") from e
+
+    stale_ids = []
+    for r in results:
+        if r.get("verdict") == "stale":
+            stale_ids.append(r["card_id"])
+            logger.info(f"Stale flagged: {r['card_id']} - {r.get('reason', '')}")
+    return stale_ids
+
+
+def flag_stale_high_priority_cards(trello, cards, list_map, batch_trace_id):
+    """Review high-priority cards for staleness and apply/remove Stale labels.
+
+    Sends ALL Needs Response / Action Required cards to Opus every pass.
+    The AI decides what's stale — no age threshold. Also self-cleans: removes
+    the Stale label from cards the AI now considers still_active.
+    """
+    stale_label_id = _get_stale_label_id(trello)
+    high_priority_lists = {"Needs Response", "Action Required"}
+
+    # Collect all high-priority cards
+    hp_cards = []
+    for card in cards:
+        card_list = list_map.get(card.get("idList"), "")
+        if card_list in high_priority_lists:
+            hp_cards.append(card)
+
+    if not hp_cards:
+        logger.info("No high-priority cards for stale review")
+        return 0, 0
+
+    # Build card data for Opus (fetch full comments)
+    cards_for_review = []
+    for card in hp_cards:
+        comments_text = ""
+        try:
+            comments = trello.get_comments(card["id"])
+            if comments:
+                lines = []
+                for c in comments[:10]:
+                    text = c.get("data", {}).get("text", "")[:200]
+                    date = c.get("date", "")
+                    lines.append(f"    [{date}] {text}")
+                comments_text = "\n".join(lines)
+        except Exception:
+            pass
+
+        cards_for_review.append({
+            "id": card["id"],
+            "name": card["name"],
+            "desc": card.get("desc", ""),
+            "list_name": list_map.get(card.get("idList"), "Unknown"),
+            "comments_text": comments_text,
+        })
+
+    log_structured(batch_trace_id, "decay_stale_review_start", metadata={
+        "candidates": len(cards_for_review),
+    })
+
+    try:
+        stale_ids = identify_stale_cards(cards_for_review)
+    except Exception as e:
+        logger.error(f"Stale review failed: {e}")
+        return 0, 0
+
+    stale_id_set = set(stale_ids)
+
+    # Apply Stale label to newly-flagged cards, remove from no-longer-stale
+    flagged = 0
+    cleaned = 0
+    for card in hp_cards:
+        has_stale_label = stale_label_id in [lb["id"] for lb in card.get("labels", [])]
+        is_stale = card["id"] in stale_id_set
+
+        if is_stale and not has_stale_label:
+            try:
+                trello.add_label_to_card(card["id"], stale_label_id)
+                flagged += 1
+            except Exception as e:
+                logger.warning(f"Decay: failed to add Stale label to {card['id']}: {e}")
+        elif not is_stale and has_stale_label:
+            try:
+                trello.remove_label_from_card(card["id"], stale_label_id)
+                cleaned += 1
+                logger.info(
+                    f"Decay: removed Stale label from '{card['name']}' (AI says still active)")
+            except Exception as e:
+                logger.warning(f"Decay: failed to remove Stale label from {card['id']}: {e}")
+
+    if flagged or cleaned:
+        log_structured(batch_trace_id, "decay_stale_review", metadata={
+            "reviewed": len(cards_for_review),
+            "flagged": flagged,
+            "cleaned": cleaned,
+        })
+
+    return flagged, cleaned
+
+
+def run_decay_if_due(trello, batch_trace_id):
+    """Check if decay is due (30+ min since last run), and if so, run it."""
+    last_run = get_last_decay_time()
+    now = datetime.now(tz=timezone.utc)  # noqa: UP017
+
+    if last_run and (now - last_run) < timedelta(minutes=DECAY_INTERVAL_MINUTES):
+        logger.info(f"Decay not due yet (last run: {last_run.isoformat()})")
+        return
+
+    logger.info("Running decay...")
+    cards = trello.get_cards()
+
+    if not cards:
+        logger.info("No cards for decay")
+        set_last_decay_time()
+        return
+
+    # Build list map
+    lists = trello.get_lists()
+    list_map = {lst["id"]: lst["name"] for lst in lists}
+
+    # Phase 1: Algorithmic decay (no AI)
+    moved, archived = decay_low_priority_cards(trello, cards, list_map, batch_trace_id)
+
+    # Phase 2: AI stale flagging (high-priority cards only)
+    # Re-fetch cards if phase 1 modified the board
+    if moved or archived:
+        cards = trello.get_cards()
+
+    flagged, cleaned = flag_stale_high_priority_cards(trello, cards, list_map, batch_trace_id)
+
+    set_last_decay_time()
+    log_structured(batch_trace_id, "decay_complete", metadata={
+        "moved_to_noted": moved,
+        "archived": archived,
+        "stale_flagged": flagged,
+        "stale_cleaned": cleaned,
+    })
+
+
 # --- Main ---
 
 
@@ -1395,6 +1723,12 @@ def main():
         run_dedup_if_due(trello, batch_trace_id)
     except Exception as e:
         logger.warning(f"Dedup failed: {e}")
+
+    # Run decay every 30 minutes
+    try:
+        run_decay_if_due(trello, batch_trace_id)
+    except Exception as e:
+        logger.warning(f"Decay failed: {e}")
 
     total_secs = round(time.time() - batch_start_time, 1)
     logger.info(f"Batch complete. Processed {len(pending)} events in {total_secs}s.")

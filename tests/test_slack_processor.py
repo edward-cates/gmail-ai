@@ -683,3 +683,302 @@ class TestDedup:
 class TestTimestampConversion:
     """Tests for _utc_to_ct timestamp conversion (if still present)."""
     pass
+
+
+class TestDecayTracking:
+    """Tests for decay interval tracking via GCS."""
+
+    def test_get_last_decay_time_returns_none_on_missing(self):
+        """Should return None if the decay timestamp blob does not exist."""
+        with patch("main.storage.Client") as mock_client:
+            mock_blob = MagicMock()
+            mock_blob.download_as_text.side_effect = Exception("Not found")
+            mock_client.return_value.bucket.return_value.blob.return_value = mock_blob
+
+            result = processor.get_last_decay_time()
+            assert result is None
+
+    def test_set_last_decay_time_writes_to_gcs(self):
+        """Should write current ISO timestamp to GCS."""
+        with patch("main.storage.Client") as mock_client:
+            mock_blob = MagicMock()
+            mock_client.return_value.bucket.return_value.blob.return_value = mock_blob
+
+            processor.set_last_decay_time()
+            mock_blob.upload_from_string.assert_called_once()
+            written = mock_blob.upload_from_string.call_args[0][0]
+            datetime.fromisoformat(written)
+
+
+class TestAlgorithmicDecay:
+    """Tests for time-based card decay (Worth Reading -> Noted -> Archive)."""
+
+    def test_worth_reading_card_decays_to_noted_after_24h(self):
+        """Card in Worth Reading with age > 24h should move to Noted."""
+        mock_trello = MagicMock()
+        mock_trello.get_list_id.return_value = "noted_list"
+
+        old_time = (datetime.now(tz=timezone.utc) - timedelta(hours=25)).isoformat()
+        cards = [{"id": "c1", "name": "Old Topic", "idList": "wr_list",
+                  "dateLastActivity": old_time}]
+        list_map = {"wr_list": "Worth Reading", "noted_list": "Noted"}
+
+        moved, archived = processor.decay_low_priority_cards(
+            mock_trello, cards, list_map, "batch-t")
+
+        assert moved == 1
+        assert archived == 0
+        mock_trello.move_card.assert_called_once_with("c1", "noted_list")
+
+    def test_noted_card_archived_after_24h(self):
+        """Card in Noted with age > 24h should be archived."""
+        mock_trello = MagicMock()
+
+        old_time = (datetime.now(tz=timezone.utc) - timedelta(hours=25)).isoformat()
+        cards = [{"id": "c1", "name": "Old Topic", "idList": "noted_list",
+                  "dateLastActivity": old_time}]
+        list_map = {"noted_list": "Noted"}
+
+        moved, archived = processor.decay_low_priority_cards(
+            mock_trello, cards, list_map, "batch-t")
+
+        assert moved == 0
+        assert archived == 1
+        mock_trello.archive_card.assert_called_once_with("c1")
+
+    def test_recent_cards_not_decayed(self):
+        """Cards with age < 24h should not be touched."""
+        mock_trello = MagicMock()
+
+        recent_time = (datetime.now(tz=timezone.utc) - timedelta(hours=12)).isoformat()
+        cards = [
+            {"id": "c1", "name": "Fresh WR", "idList": "wr_list",
+             "dateLastActivity": recent_time},
+            {"id": "c2", "name": "Fresh Noted", "idList": "noted_list",
+             "dateLastActivity": recent_time},
+        ]
+        list_map = {"wr_list": "Worth Reading", "noted_list": "Noted"}
+
+        moved, archived = processor.decay_low_priority_cards(
+            mock_trello, cards, list_map, "batch-t")
+
+        assert moved == 0
+        assert archived == 0
+        mock_trello.move_card.assert_not_called()
+        mock_trello.archive_card.assert_not_called()
+
+    def test_high_priority_cards_not_decayed(self):
+        """Cards in Needs Response / Action Required should never be algorithmically decayed."""
+        mock_trello = MagicMock()
+
+        old_time = (datetime.now(tz=timezone.utc) - timedelta(hours=48)).isoformat()
+        cards = [
+            {"id": "c1", "name": "Urgent", "idList": "nr_list",
+             "dateLastActivity": old_time},
+            {"id": "c2", "name": "Action", "idList": "ar_list",
+             "dateLastActivity": old_time},
+        ]
+        list_map = {"nr_list": "Needs Response", "ar_list": "Action Required"}
+
+        moved, archived = processor.decay_low_priority_cards(
+            mock_trello, cards, list_map, "batch-t")
+
+        assert moved == 0
+        assert archived == 0
+
+
+class TestStaleFlagging:
+    """Tests for AI-assisted stale flagging of high-priority cards."""
+
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "test-key"})
+    @patch("main.ChatAnthropic")
+    def test_identify_stale_cards_parses_response(self, mock_anthropic_cls):
+        """Should return card IDs that Opus marks as stale."""
+        mock_llm = MagicMock()
+        mock_anthropic_cls.return_value = mock_llm
+
+        mock_response = MagicMock()
+        mock_response.content = json.dumps([
+            {"card_id": "c1", "verdict": "stale", "reason": "Resolved in thread"},
+            {"card_id": "c2", "verdict": "still_active", "reason": "Waiting on Edward"},
+        ])
+        mock_llm.invoke.return_value = mock_response
+
+        cards = [
+            {"id": "c1", "name": "T1", "desc": "d1", "list_name": "Needs Response",
+             "comments_text": ""},
+            {"id": "c2", "name": "T2", "desc": "d2", "list_name": "Action Required",
+             "comments_text": ""},
+        ]
+
+        result = processor.identify_stale_cards(cards)
+        assert result == ["c1"]
+        assert mock_llm.invoke.call_count == 1
+
+    @patch.dict("os.environ", {"SLACK_AI_API_KEY": "test-key"})
+    @patch("main.ChatAnthropic")
+    def test_identify_stale_cards_empty_when_all_active(self, mock_anthropic_cls):
+        """Should return empty list when all cards are still active."""
+        mock_llm = MagicMock()
+        mock_anthropic_cls.return_value = mock_llm
+
+        mock_response = MagicMock()
+        mock_response.content = json.dumps([
+            {"card_id": "c1", "verdict": "still_active", "reason": "Still waiting"},
+        ])
+        mock_llm.invoke.return_value = mock_response
+
+        result = processor.identify_stale_cards([
+            {"id": "c1", "name": "T1", "desc": "d1", "list_name": "Needs Response",
+             "comments_text": ""},
+        ])
+        assert result == []
+
+    def test_stale_label_removed_when_ai_says_still_active(self):
+        """Cards with Stale label that AI now considers active should have label removed."""
+        processor._stale_label_id = None
+
+        mock_trello = MagicMock()
+        mock_trello.get_board_labels.return_value = [{"id": "stale_lbl", "name": "Stale"}]
+        mock_trello.get_comments.return_value = []
+
+        cards = [{
+            "id": "c1", "name": "Topic", "idList": "nr_list",
+            "dateLastActivity": datetime.now(tz=timezone.utc).isoformat(),
+            "labels": [{"id": "stale_lbl", "name": "Stale", "color": "yellow"}],
+        }]
+        list_map = {"nr_list": "Needs Response"}
+
+        with patch("main.identify_stale_cards", return_value=[]):
+            flagged, cleaned = processor.flag_stale_high_priority_cards(
+                mock_trello, cards, list_map, "batch-t")
+
+        assert cleaned == 1
+        mock_trello.remove_label_from_card.assert_called_once_with("c1", "stale_lbl")
+
+    def test_already_stale_card_kept_when_ai_confirms(self):
+        """Cards with Stale label that AI still considers stale should not be re-labeled."""
+        processor._stale_label_id = None
+
+        mock_trello = MagicMock()
+        mock_trello.get_board_labels.return_value = [{"id": "stale_lbl", "name": "Stale"}]
+        mock_trello.get_comments.return_value = []
+
+        cards = [{
+            "id": "c1", "name": "Topic", "idList": "nr_list",
+            "dateLastActivity": (datetime.now(tz=timezone.utc) - timedelta(hours=72)).isoformat(),
+            "labels": [{"id": "stale_lbl", "name": "Stale", "color": "yellow"}],
+        }]
+        list_map = {"nr_list": "Needs Response"}
+
+        with patch("main.identify_stale_cards", return_value=["c1"]):
+            flagged, cleaned = processor.flag_stale_high_priority_cards(
+                mock_trello, cards, list_map, "batch-t")
+
+        assert flagged == 0
+        assert cleaned == 0
+        mock_trello.add_label_to_card.assert_not_called()
+        mock_trello.remove_label_from_card.assert_not_called()
+
+    def test_low_priority_cards_skipped_for_stale_review(self):
+        """Worth Reading and Noted cards should never be sent for stale review."""
+        processor._stale_label_id = None
+
+        mock_trello = MagicMock()
+        mock_trello.get_board_labels.return_value = [{"id": "stale_lbl", "name": "Stale"}]
+
+        cards = [
+            {"id": "c1", "name": "T1", "idList": "wr_list",
+             "dateLastActivity": datetime.now(tz=timezone.utc).isoformat(), "labels": []},
+            {"id": "c2", "name": "T2", "idList": "noted_list",
+             "dateLastActivity": datetime.now(tz=timezone.utc).isoformat(), "labels": []},
+        ]
+        list_map = {"wr_list": "Worth Reading", "noted_list": "Noted"}
+
+        with patch("main.identify_stale_cards") as mock_identify:
+            flagged, cleaned = processor.flag_stale_high_priority_cards(
+                mock_trello, cards, list_map, "batch-t")
+            mock_identify.assert_not_called()
+        assert flagged == 0
+
+
+class TestStaleLabel:
+    """Tests for Stale label caching."""
+
+    def test_get_stale_label_id_finds_existing(self):
+        """Should find existing Stale label."""
+        processor._stale_label_id = None
+        mock_trello = MagicMock()
+        mock_trello.get_board_labels.return_value = [
+            {"id": "lbl1", "name": "Mentioned"},
+            {"id": "lbl2", "name": "Stale"},
+        ]
+        result = processor._get_stale_label_id(mock_trello)
+        assert result == "lbl2"
+        mock_trello.create_label.assert_not_called()
+
+    def test_get_stale_label_id_creates_if_missing(self):
+        """Should create Stale label if not on board."""
+        processor._stale_label_id = None
+        mock_trello = MagicMock()
+        mock_trello.get_board_labels.return_value = [{"id": "lbl1", "name": "Mentioned"}]
+        mock_trello.create_label.return_value = {"id": "new_stale"}
+        result = processor._get_stale_label_id(mock_trello)
+        assert result == "new_stale"
+        mock_trello.create_label.assert_called_once_with("Stale", color="yellow")
+
+
+class TestRunDecayIfDue:
+    """Tests for the decay orchestrator timing check."""
+
+    def test_skips_when_not_due(self):
+        """Should skip decay if last run was less than 30 minutes ago."""
+        with patch("main.get_last_decay_time") as mock_get:
+            mock_get.return_value = datetime.now(tz=timezone.utc) - timedelta(minutes=10)
+            mock_trello = MagicMock()
+
+            processor.run_decay_if_due(mock_trello, "batch-t")
+            mock_trello.get_cards.assert_not_called()
+
+    def test_runs_when_due(self):
+        """Should run decay if last run was more than 30 minutes ago."""
+        with (
+            patch("main.get_last_decay_time") as mock_get,
+            patch("main.set_last_decay_time") as mock_set,
+            patch("main.decay_low_priority_cards") as mock_low,
+            patch("main.flag_stale_high_priority_cards") as mock_high,
+        ):
+            mock_get.return_value = datetime.now(tz=timezone.utc) - timedelta(minutes=45)
+            mock_low.return_value = (0, 0)
+            mock_high.return_value = (0, 0)
+
+            mock_trello = MagicMock()
+            mock_trello.get_cards.return_value = [
+                {"id": "c1", "name": "T1", "idList": "l1"},
+            ]
+            mock_trello.get_lists.return_value = [{"id": "l1", "name": "Worth Reading"}]
+
+            processor.run_decay_if_due(mock_trello, "batch-t")
+            mock_trello.get_cards.assert_called()
+            mock_low.assert_called_once()
+            mock_high.assert_called_once()
+            mock_set.assert_called_once()
+
+    def test_runs_on_first_ever_run(self):
+        """Should run decay if no previous timestamp exists."""
+        with (
+            patch("main.get_last_decay_time") as mock_get,
+            patch("main.set_last_decay_time"),
+            patch("main.decay_low_priority_cards") as mock_low,
+            patch("main.flag_stale_high_priority_cards") as mock_high,
+        ):
+            mock_get.return_value = None
+            mock_low.return_value = (0, 0)
+            mock_high.return_value = (0, 0)
+
+            mock_trello = MagicMock()
+            mock_trello.get_cards.return_value = [{"id": "c1", "name": "T1", "idList": "l1"}]
+            mock_trello.get_lists.return_value = [{"id": "l1", "name": "Noted"}]
+
+            processor.run_decay_if_due(mock_trello, "batch-t")
+            mock_low.assert_called_once()
