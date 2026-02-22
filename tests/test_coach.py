@@ -126,6 +126,77 @@ class TestReadBoardContext:
         result = coach.read_board_context(mock_trello)
         assert result == ""
 
+    def test_excludes_memories_cards(self):
+        mock_trello = MagicMock()
+        mock_trello.get_lists.return_value = [
+            {"id": "list1", "name": "Exercise"},
+            {"id": "mem_list", "name": "Memories"},
+        ]
+        mock_trello.get_cards.return_value = [
+            {"id": "c1", "name": "Push Day", "desc": "", "idList": "list1"},
+            {"id": "c2", "name": "PRs", "desc": "", "idList": "mem_list"},
+        ]
+        mock_trello.get_card_checklists.return_value = []
+        mock_trello.get_card_comments.return_value = []
+
+        result = coach.read_board_context(mock_trello)
+        assert "Push Day" in result
+        assert "PRs" not in result
+
+
+class TestReadMemories:
+    """Tests for read_memories()."""
+
+    def test_reads_memory_cards_and_comments(self):
+        mock_trello = MagicMock()
+        mock_trello.get_lists.return_value = [
+            {"id": "list1", "name": "Exercise"},
+            {"id": "mem_list", "name": "Memories"},
+        ]
+        mock_trello.get_cards.return_value = [
+            {"id": "c1", "name": "Push Day", "desc": "", "idList": "list1"},
+            {"id": "m1", "name": "Personal Records", "desc": "", "idList": "mem_list"},
+        ]
+        mock_trello.get_card_comments.return_value = [
+            {
+                "date": "2026-02-10T14:00:00",
+                "data": {"text": "**[Coach]** Squat PR: 225x5x5"},
+            },
+            {
+                "date": "2026-02-15T10:00:00",
+                "data": {"text": "**[Coach]** Bench PR: 185x4x8"},
+            },
+        ]
+
+        result = coach.read_memories(mock_trello)
+        assert "Personal Records" in result
+        assert "card_id: m1" in result
+        assert "Squat PR: 225x5x5" in result
+        assert "Bench PR: 185x4x8" in result
+        # Coach prefix should be stripped
+        assert "**[Coach]**" not in result
+        # Non-memory cards should not appear
+        assert "Push Day" not in result
+
+    def test_returns_empty_when_no_memories_list(self):
+        mock_trello = MagicMock()
+        mock_trello.get_lists.return_value = [
+            {"id": "list1", "name": "Exercise"},
+        ]
+
+        result = coach.read_memories(mock_trello)
+        assert result == ""
+
+    def test_returns_empty_when_no_memory_cards(self):
+        mock_trello = MagicMock()
+        mock_trello.get_lists.return_value = [
+            {"id": "mem_list", "name": "Memories"},
+        ]
+        mock_trello.get_cards.return_value = []
+
+        result = coach.read_memories(mock_trello)
+        assert result == ""
+
 
 class TestReadCardContext:
     """Tests for read_card_context()."""

@@ -259,6 +259,7 @@ def read_board_context(trello):
 
     Returns a formatted string with all cards and conversations,
     including which list each card belongs to, card IDs, and checklist items.
+    Excludes Memories list cards (read separately via read_memories).
     """
     cards = trello.get_cards()
 
@@ -266,8 +267,17 @@ def read_board_context(trello):
     lists = trello.get_lists()
     list_names = {lst["id"]: lst["name"] for lst in lists}
 
+    # Find Memories list ID to exclude those cards
+    memories_id = None
+    for lst in lists:
+        if lst["name"].lower() == "memories":
+            memories_id = lst["id"]
+            break
+
     lines = []
     for card in cards:
+        if card.get("idList") == memories_id:
+            continue
         list_name = list_names.get(card.get("idList"), "Unknown")
         lines.append(f"### [{list_name}] {card['name']}  (card_id: {card['id']})")
         if card.get("desc"):
@@ -293,6 +303,36 @@ def read_board_context(trello):
             lines.append(f"[{ts}] {role}: {text}")
         lines.append("")
 
+    return "\n".join(lines)
+
+
+def read_memories(trello):
+    """Read all memory cards and their comments from the Memories list."""
+    lists = trello.get_lists()
+    memories_id = None
+    for lst in lists:
+        if lst["name"].lower() == "memories":
+            memories_id = lst["id"]
+            break
+    if not memories_id:
+        return ""
+
+    cards = trello.get_cards()
+    memory_cards = [c for c in cards if c.get("idList") == memories_id]
+
+    lines = []
+    for card in memory_cards:
+        lines.append(f"### {card['name']}  (card_id: {card['id']})")
+        if card.get("desc"):
+            lines.append(card["desc"][:500])
+        comments = trello.get_card_comments(card["id"])
+        for comment in comments:
+            ts = _utc_to_ct(comment.get("date", ""))
+            text = comment.get("data", {}).get("text", "")
+            if text.startswith(COACH_PREFIX):
+                text = text[len(COACH_PREFIX):].lstrip()
+            lines.append(f"- [{ts}] {text}")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -373,7 +413,7 @@ def apply_spec_update(current_spec, instruction):
     return response.content[0].text.strip()
 
 
-def generate_morning_cards(spec, board_context):
+def generate_morning_cards(spec, board_context, memories=""):
     """Generate daily exercise and nutrition cards."""
     client = _get_client()
 
@@ -388,13 +428,17 @@ Each morning you create cards for the day's training and nutrition.
 Today is {day_of_week}, {date_str}. Current time: {time_str} Central.
 
 ## Board Structure
-The board has three lists:
+The board has four lists:
 - **Exercise** — one card per workout (title, full routine in description, checklist of exercises)
 - **Nutrition** — cards for meals, grocery runs, supplements (title, description, checklist of items)
 - **Forum** — daily check-in card for open conversation throughout the day
+- **Memories** — long-term memory cards organized by category (one card per topic, comments are individual memories)
 
-## Client Spec (board description — your living knowledge about this client)
+## Client Spec (board description — your working plan for this client)
 {spec or "(No spec yet — introduce yourself and ask about their goals in the exercise comment)"}
+
+## Memories (long-term factual reference)
+{memories or "(No memories yet)"}
 
 ## Recent Board Activity (all cards and conversations)
 {board_context or "(First interaction — no history yet)"}
@@ -417,17 +461,33 @@ Create today's exercise card, nutrition card, and a Forum check-in card. Conside
 - The forum card is a daily check-in — open-ended prompt for the client to message throughout the day
 - The forum comment should be conversational: ask how they're feeling, follow up on yesterday, etc.
 - Exercise or nutrition can be null if not applicable; always create a forum card
-- The spec is your ONLY long-term memory — cards get archived. Update the spec with any plans, recommendations, or decisions you make in today's cards. Also prune stale info, compress daily details into trends, and remove completed one-off tasks.
+
+## Two-Tier Memory System
+You have two places to store information:
+
+**Spec** (board description) — your working document. Keep it concise:
+- Current training program and schedule
+- Active goals and preferences
+- Plans and decisions that change over time
+- Update via "spec_update_instruction". Also prune stale info, compress daily details into trends, and remove completed one-off tasks.
+
+**Memories** (Memories list) — factual records that accumulate. Store critical facts only:
+- Personal records (PRs, body weight milestones)
+- Injury history and recovery notes
+- Key client info (schedule constraints, equipment access, dietary restrictions)
+- Supplement protocols and changes
+- To add a memory: use a "comment" action on an existing memory card, or "create_card" on the Memories list for a new category.
+- Don't store everything — only facts you'd actually reference later when coaching.
 
 ## Board Actions
-You can take actions on existing cards. Available actions:
+You can take actions on existing cards or create new ones. Available actions:
 - {{"action": "archive_card", "card_id": "..."}} — archive a card
 - {{"action": "check_item", "card_id": "...", "item_id": "..."}} — check off a checklist item
 - {{"action": "uncheck_item", "card_id": "...", "item_id": "..."}} — uncheck a checklist item
-- {{"action": "move_card", "card_id": "...", "list": "Exercise|Nutrition|Forum"}} — move a card
+- {{"action": "move_card", "card_id": "...", "list": "Exercise|Nutrition|Forum|Memories"}} — move a card
 - {{"action": "comment", "card_id": "...", "text": "..."}} — comment on an existing card
 - {{"action": "update_card", "card_id": "...", "name": "...", "desc": "..."}} — update card name/desc (both optional)
-- {{"action": "create_card", "list": "Exercise|Nutrition|Forum", "title": "...", "description": "...", "checklist": ["item1", "item2"], "comment": "..."}} — create a new card (description, checklist, comment are optional)
+- {{"action": "create_card", "list": "Exercise|Nutrition|Forum|Memories", "title": "...", "description": "...", "checklist": ["item1", "item2"], "comment": "..."}} — create a new card (description, checklist, comment are optional)
 
 ## Output
 Respond with JSON only:
@@ -463,7 +523,7 @@ Either "exercise" or "nutrition" can be null if not applicable for today. Always
     return _parse_json_response(response.content[0].text)
 
 
-def generate_reply(spec, board_context, card_context, user_comment, card_name):
+def generate_reply(spec, board_context, card_context, user_comment, card_name, memories=""):
     """Process user comment and generate reply + optional spec updates."""
     client = _get_client()
 
@@ -477,13 +537,17 @@ Your client just commented on a card. Read their message and respond helpfully.
 Today is {day_of_week}. Current time: {time_str} Central.
 
 ## Board Structure
-The board has three lists:
+The board has four lists:
 - **Exercise** — workout cards (one per session)
 - **Nutrition** — meal plans, grocery lists, supplement tracking
 - **Forum** — ongoing discussion topics
+- **Memories** — long-term memory cards organized by category (one card per topic, comments are individual memories)
 
-## Client Spec (board description)
+## Client Spec (board description — your working plan)
 {spec or "(No spec yet)"}
+
+## Memories (long-term factual reference)
+{memories or "(No memories yet)"}
 
 ## Full Board Activity (all cards and conversations)
 {board_context or "(No board history yet)"}
@@ -497,7 +561,7 @@ The board has three lists:
 ## Your Task
 1. Understand what they're telling you or asking
 2. Respond with helpful, specific coaching advice
-3. Update the spec with anything that should be remembered
+3. Update spec and/or memories as needed
 
 ## Rules
 - Be conversational but knowledgeable
@@ -505,38 +569,32 @@ The board has three lists:
 - If they ask a question, give a direct answer then brief explanation
 - If they share a concern (injury, plateau, motivation), address it with empathy and a plan
 
-## CRITICAL: Spec Updates
-The spec is your ONLY long-term memory. Cards get archived after you respond.
-If it's not in the spec, you will forget it. You are responsible for maintaining
-the spec like a real coach maintains client notes — add, refine, and prune.
+## Two-Tier Memory System
+You have two places to store information:
 
-**Add** new information:
-- Recommendations you make (supplements, dosages, timing, form cues)
-- Plans and decisions (training split, diet approach, schedule changes)
-- Info they share (PRs, injuries, body weight, preferences, schedule)
+**Spec** (board description) — your working document. Keep it concise:
+- Current training program and schedule
+- Active goals and preferences
+- Plans and decisions that change over time
+- Update via "spec_update_instruction". Also prune stale info, compress daily details into trends, and remove completed one-off tasks.
 
-**Refine** over time:
-- Compress daily details into trends ("bench progressed 135→185 over 6 weeks")
-- Replace outdated info rather than appending (new PR replaces old PR)
-- Consolidate scattered notes into organized sections
-
-**Prune** what's no longer useful:
-- Completed one-off tasks (old grocery lists, past event prep)
-- Superseded plans (old training split after switching to a new one)
-- Day-level details once they've been captured as trends
-
-Keep the spec concise and current — like a coach's notebook, not a log file.
-When in doubt, update the spec. It's cheap and prevents losing context.
+**Memories** (Memories list) — factual records that accumulate. Store critical facts only:
+- Personal records (PRs, body weight milestones)
+- Injury history and recovery notes
+- Key client info (schedule constraints, equipment access, dietary restrictions)
+- Supplement protocols and changes
+- To add a memory: use a "comment" action on an existing memory card, or "create_card" on the Memories list for a new category.
+- Don't store everything — only facts you'd actually reference later when coaching.
 
 ## Board Actions
 You can take actions on existing cards or create new ones. Available actions:
 - {{"action": "archive_card", "card_id": "..."}} — archive a card
 - {{"action": "check_item", "card_id": "...", "item_id": "..."}} — check off a checklist item
 - {{"action": "uncheck_item", "card_id": "...", "item_id": "..."}} — uncheck a checklist item
-- {{"action": "move_card", "card_id": "...", "list": "Exercise|Nutrition|Forum"}} — move a card
+- {{"action": "move_card", "card_id": "...", "list": "Exercise|Nutrition|Forum|Memories"}} — move a card
 - {{"action": "comment", "card_id": "...", "text": "..."}} — comment on an existing card
 - {{"action": "update_card", "card_id": "...", "name": "...", "desc": "..."}} — update card name/desc (both optional)
-- {{"action": "create_card", "list": "Exercise|Nutrition|Forum", "title": "...", "description": "...", "checklist": ["item1", "item2"], "comment": "..."}} — create a new card (description, checklist, comment are optional)
+- {{"action": "create_card", "list": "Exercise|Nutrition|Forum|Memories", "title": "...", "description": "...", "checklist": ["item1", "item2"], "comment": "..."}} — create a new card (description, checklist, comment are optional)
 
 Use create_card when the client asks for a new workout plan, meal plan, grocery list, or any other card-worthy content.
 For example, if they say "can you make me a leg day card?", create one on the Exercise list.
@@ -707,10 +765,13 @@ def handle_morning(trace_id):
         spec = trello.get_board_desc()
         log_structured(trace_id, "read_spec", metadata={"length": len(spec)})
 
+        memories = read_memories(trello)
+        log_structured(trace_id, "read_memories", metadata={"length": len(memories)})
+
         board_context = read_board_context(trello)
         log_structured(trace_id, "read_context", metadata={"length": len(board_context)})
 
-        result = generate_morning_cards(spec, board_context)
+        result = generate_morning_cards(spec, board_context, memories)
 
         log_structured(trace_id, "generate_morning", metadata={
             "has_exercise": result.get("exercise") is not None,
@@ -758,6 +819,9 @@ def handle_reply(trace_id):
         spec = trello.get_board_desc()
         log_structured(trace_id, "read_spec", metadata={"length": len(spec)})
 
+        memories = read_memories(trello)
+        log_structured(trace_id, "read_memories", metadata={"length": len(memories)})
+
         board_context = read_board_context(trello)
         card_context = read_card_context(trello, card_id)
         card = trello.get_card(card_id)
@@ -768,7 +832,7 @@ def handle_reply(trace_id):
             "card_length": len(card_context),
         })
 
-        result = generate_reply(spec, board_context, card_context, comment_text, card_name)
+        result = generate_reply(spec, board_context, card_context, comment_text, card_name, memories)
 
         reply_text = result["message"]
         log_structured(trace_id, "generate_reply", metadata={"length": len(reply_text)})
