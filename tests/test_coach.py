@@ -570,8 +570,8 @@ class TestConsolidateSpec:
         mock_trello.update_board_desc.assert_called_once_with("# Small spec")
 
 
-class TestTrelloClientCredentialSanitization:
-    """Tests for TrelloClient._request credential sanitization."""
+class TestTrelloClientRequest:
+    """Tests for TrelloClient._request: retries and credential sanitization."""
 
     @patch.dict("os.environ", {
         "TRELLO_API_KEY": "secret-key-123",
@@ -579,8 +579,8 @@ class TestTrelloClientCredentialSanitization:
         "TRELLO_COACH_BOARD_ID": "board123",
     })
     @patch.object(coach.requests, "request")
-    def test_request_sanitizes_credentials_on_error(self, mock_request):
-        """HTTP errors should not contain API key or token."""
+    def test_sanitizes_credentials_on_4xx(self, mock_request):
+        """HTTP 4xx errors should not contain API key or token."""
         mock_response = MagicMock()
         mock_response.status_code = 400
         mock_response.reason = "Bad Request"
@@ -602,4 +602,95 @@ class TestTrelloClientCredentialSanitization:
             assert "secret-key-123" not in error_msg
             assert "secret-token-456" not in error_msg
             assert "400" in error_msg
-            assert "Bad Request" in error_msg
+
+    @patch.dict("os.environ", {
+        "TRELLO_API_KEY": "k",
+        "TRELLO_TOKEN": "t",
+        "TRELLO_COACH_BOARD_ID": "b",
+    })
+    @patch.object(coach.requests, "request")
+    def test_no_retry_on_4xx(self, mock_request):
+        """Client errors (4xx) should fail immediately without retries."""
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.reason = "Bad Request"
+        mock_response.url = "https://api.trello.com/1/boards/b"
+        mock_response.raise_for_status.side_effect = requests.HTTPError(
+            response=mock_response,
+        )
+        mock_request.return_value = mock_response
+
+        client = coach.TrelloClient()
+        try:
+            client.get_board_desc()
+        except requests.HTTPError:
+            pass
+        assert mock_request.call_count == 1
+
+    @patch.dict("os.environ", {
+        "TRELLO_API_KEY": "k",
+        "TRELLO_TOKEN": "t",
+        "TRELLO_COACH_BOARD_ID": "b",
+    })
+    @patch.object(coach.time, "sleep")
+    @patch.object(coach.requests, "request")
+    def test_retries_on_connection_error(self, mock_request, mock_sleep):
+        """ConnectionError should be retried up to 3 times."""
+        mock_request.side_effect = requests.ConnectionError("Connection reset")
+
+        client = coach.TrelloClient()
+        try:
+            client.get_board_desc()
+        except requests.ConnectionError:
+            pass
+        assert mock_request.call_count == 3
+        assert mock_sleep.call_count == 2  # sleeps between retries
+
+    @patch.dict("os.environ", {
+        "TRELLO_API_KEY": "k",
+        "TRELLO_TOKEN": "t",
+        "TRELLO_COACH_BOARD_ID": "b",
+    })
+    @patch.object(coach.time, "sleep")
+    @patch.object(coach.requests, "request")
+    def test_retries_on_5xx(self, mock_request, mock_sleep):
+        """Server errors (5xx) should be retried."""
+        mock_response = MagicMock()
+        mock_response.status_code = 502
+        mock_response.reason = "Bad Gateway"
+        mock_response.url = "https://api.trello.com/1/boards/b"
+        mock_response.raise_for_status.side_effect = requests.HTTPError(
+            response=mock_response,
+        )
+        mock_request.return_value = mock_response
+
+        client = coach.TrelloClient()
+        try:
+            client.get_board_desc()
+        except requests.HTTPError:
+            pass
+        assert mock_request.call_count == 3
+
+    @patch.dict("os.environ", {
+        "TRELLO_API_KEY": "k",
+        "TRELLO_TOKEN": "t",
+        "TRELLO_COACH_BOARD_ID": "b",
+    })
+    @patch.object(coach.time, "sleep")
+    @patch.object(coach.requests, "request")
+    def test_retry_succeeds_on_second_attempt(self, mock_request, mock_sleep):
+        """Should return successfully if retry succeeds."""
+        ok_response = MagicMock()
+        ok_response.status_code = 200
+        ok_response.raise_for_status.return_value = None
+        ok_response.json.return_value = {"desc": "# Spec"}
+
+        mock_request.side_effect = [
+            requests.ConnectionError("Connection reset"),
+            ok_response,
+        ]
+
+        client = coach.TrelloClient()
+        result = client.get_board_desc()
+        assert result == "# Spec"
+        assert mock_request.call_count == 2

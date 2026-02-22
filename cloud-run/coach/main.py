@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import anthropic
@@ -61,19 +62,35 @@ class TrelloClient:
     def _auth_params(self):
         return {"key": self.api_key, "token": self.token}
 
-    def _request(self, method, url, params=None, **kwargs):
-        """Make an authenticated request, sanitizing credentials from errors."""
+    def _request(self, method, url, params=None, retries=3, **kwargs):
+        """Make an authenticated request with retry and credential sanitization."""
         merged = {**self._auth_params(), **(params or {})}
-        r = requests.request(method, url, params=merged, **kwargs)
-        try:
-            r.raise_for_status()
-        except requests.HTTPError:
-            clean_url = re.sub(r"[?&](key|token)=[^&]*", "", str(r.url))
-            raise requests.HTTPError(
-                f"{r.status_code} {r.reason} for url: {clean_url}",
-                response=r,
-            ) from None
-        return r
+        last_exc = None
+        for attempt in range(retries):
+            try:
+                r = requests.request(method, url, params=merged, **kwargs)
+                r.raise_for_status()
+                return r
+            except requests.HTTPError:
+                if r.status_code < 500:
+                    # Client errors (4xx) — not retryable, fail immediately
+                    clean_url = re.sub(r"[?&](key|token)=[^&]*", "", str(r.url))
+                    raise requests.HTTPError(
+                        f"{r.status_code} {r.reason} for url: {clean_url}",
+                        response=r,
+                    ) from None
+                last_exc = requests.HTTPError(
+                    f"{r.status_code} {r.reason}", response=r,
+                )
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+            except requests.ConnectionError as e:
+                last_exc = e
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+        raise type(last_exc)(
+            re.sub(r"[?&](key|token)=[^&]*", "", str(last_exc))
+        ) from None
 
     def get_board_desc(self):
         """Get the board description (used as spec/manifesto)."""
