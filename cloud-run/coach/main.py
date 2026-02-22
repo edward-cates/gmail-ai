@@ -58,35 +58,42 @@ class TrelloClient:
             raise ValueError(
                 "TRELLO_API_KEY, TRELLO_TOKEN, and TRELLO_COACH_BOARD_ID must be set"
             )
-    def _params(self, **extra):
-        return {"key": self.api_key, "token": self.token, **extra}
+    def _auth_params(self):
+        return {"key": self.api_key, "token": self.token}
+
+    def _request(self, method, url, params=None, **kwargs):
+        """Make an authenticated request, sanitizing credentials from errors."""
+        merged = {**self._auth_params(), **(params or {})}
+        r = requests.request(method, url, params=merged, **kwargs)
+        try:
+            r.raise_for_status()
+        except requests.HTTPError:
+            clean_url = re.sub(r"[?&](key|token)=[^&]*", "", str(r.url))
+            raise requests.HTTPError(
+                f"{r.status_code} {r.reason} for url: {clean_url}",
+                response=r,
+            ) from None
+        return r
 
     def get_board_desc(self):
         """Get the board description (used as spec/manifesto)."""
-        r = requests.get(
-            f"{self.BASE_URL}/boards/{self.board_id}",
-            params=self._params(fields="desc"),
+        r = self._request(
+            "GET", f"{self.BASE_URL}/boards/{self.board_id}",
+            params={"fields": "desc"},
         )
-        r.raise_for_status()
         return r.json().get("desc", "")
 
     def update_board_desc(self, desc):
         """Update the board description."""
-        r = requests.put(
-            f"{self.BASE_URL}/boards/{self.board_id}",
-            params=self._params(),
+        r = self._request(
+            "PUT", f"{self.BASE_URL}/boards/{self.board_id}",
             data={"desc": desc},
         )
-        r.raise_for_status()
         return r.json()
 
     def get_lists(self):
         """Get all lists on the board."""
-        r = requests.get(
-            f"{self.BASE_URL}/boards/{self.board_id}/lists",
-            params=self._params(),
-        )
-        r.raise_for_status()
+        r = self._request("GET", f"{self.BASE_URL}/boards/{self.board_id}/lists")
         return r.json()
 
     def get_list_id(self, list_name):
@@ -98,50 +105,39 @@ class TrelloClient:
 
     def get_cards(self):
         """Get all open cards on the board."""
-        r = requests.get(
-            f"{self.BASE_URL}/boards/{self.board_id}/cards",
-            params=self._params(),
-        )
-        r.raise_for_status()
+        r = self._request("GET", f"{self.BASE_URL}/boards/{self.board_id}/cards")
         return r.json()
 
     def get_card(self, card_id):
         """Get a single card by ID."""
-        r = requests.get(
-            f"{self.BASE_URL}/cards/{card_id}",
-            params=self._params(),
-        )
-        r.raise_for_status()
+        r = self._request("GET", f"{self.BASE_URL}/cards/{card_id}")
         return r.json()
 
     def get_card_comments(self, card_id, limit=50):
         """Get comments on a card (newest first from API, reversed to oldest first)."""
-        r = requests.get(
-            f"{self.BASE_URL}/cards/{card_id}/actions",
-            params=self._params(filter="commentCard", limit=limit),
+        r = self._request(
+            "GET", f"{self.BASE_URL}/cards/{card_id}/actions",
+            params={"filter": "commentCard", "limit": limit},
         )
-        r.raise_for_status()
         comments = r.json()
         comments.reverse()  # oldest first
         return comments
 
     def create_card(self, list_id, name, desc=""):
         """Create a new card."""
-        r = requests.post(
-            f"{self.BASE_URL}/cards",
-            params=self._params(idList=list_id, pos="top"),
+        r = self._request(
+            "POST", f"{self.BASE_URL}/cards",
+            params={"idList": list_id, "pos": "top"},
             data={"name": name, "desc": desc},
         )
-        r.raise_for_status()
         return r.json()
 
     def move_card(self, card_id, list_id):
         """Move a card to a different list."""
-        r = requests.put(
-            f"{self.BASE_URL}/cards/{card_id}",
-            params=self._params(idList=list_id),
+        r = self._request(
+            "PUT", f"{self.BASE_URL}/cards/{card_id}",
+            params={"idList": list_id},
         )
-        r.raise_for_status()
         return r.json()
 
     def add_comment(self, card_id, text):
@@ -155,77 +151,63 @@ class TrelloClient:
         if text.startswith(COACH_PREFIX):
             text = text[len(COACH_PREFIX):].lstrip()
         prefixed = f"{COACH_PREFIX} {text}"
-        r = requests.post(
-            f"{self.BASE_URL}/cards/{card_id}/actions/comments",
-            params=self._params(),
+        r = self._request(
+            "POST", f"{self.BASE_URL}/cards/{card_id}/actions/comments",
             data={"text": prefixed},
         )
-        r.raise_for_status()
         return r.json()
 
     def create_checklist(self, card_id, name="Exercises"):
         """Create a checklist on a card."""
-        r = requests.post(
-            f"{self.BASE_URL}/cards/{card_id}/checklists",
-            params=self._params(name=name),
+        r = self._request(
+            "POST", f"{self.BASE_URL}/cards/{card_id}/checklists",
+            params={"name": name},
         )
-        r.raise_for_status()
         return r.json()
 
     def add_checklist_item(self, checklist_id, name):
         """Add an item to a checklist."""
-        r = requests.post(
-            f"{self.BASE_URL}/checklists/{checklist_id}/checkItems",
-            params=self._params(name=name),
+        r = self._request(
+            "POST", f"{self.BASE_URL}/checklists/{checklist_id}/checkItems",
+            params={"name": name},
         )
-        r.raise_for_status()
         return r.json()
 
     def archive_card(self, card_id):
         """Archive (close) a card."""
-        r = requests.put(
-            f"{self.BASE_URL}/cards/{card_id}",
-            params=self._params(closed="true"),
+        r = self._request(
+            "PUT", f"{self.BASE_URL}/cards/{card_id}",
+            params={"closed": "true"},
         )
-        r.raise_for_status()
         return r.json()
 
     def update_card(self, card_id, **fields):
         """Update card fields (name, desc, etc.)."""
-        r = requests.put(
-            f"{self.BASE_URL}/cards/{card_id}",
-            params=self._params(),
+        r = self._request(
+            "PUT", f"{self.BASE_URL}/cards/{card_id}",
             data=fields,
         )
-        r.raise_for_status()
         return r.json()
 
     def get_card_checklists(self, card_id):
         """Get all checklists on a card with items and states."""
-        r = requests.get(
-            f"{self.BASE_URL}/cards/{card_id}/checklists",
-            params=self._params(),
-        )
-        r.raise_for_status()
+        r = self._request("GET", f"{self.BASE_URL}/cards/{card_id}/checklists")
         return r.json()
 
     def add_reaction(self, action_id, emoji_short_name):
         """Add an emoji reaction to a comment (action)."""
-        r = requests.post(
-            f"{self.BASE_URL}/actions/{action_id}/reactions",
-            params=self._params(),
+        r = self._request(
+            "POST", f"{self.BASE_URL}/actions/{action_id}/reactions",
             json={"shortName": emoji_short_name},
         )
-        r.raise_for_status()
         return r.json()
 
     def set_check_item_state(self, card_id, check_item_id, state="complete"):
         """Check or uncheck a checklist item. state: 'complete' or 'incomplete'."""
-        r = requests.put(
-            f"{self.BASE_URL}/cards/{card_id}/checkItem/{check_item_id}",
-            params=self._params(state=state),
+        r = self._request(
+            "PUT", f"{self.BASE_URL}/cards/{card_id}/checkItem/{check_item_id}",
+            params={"state": state},
         )
-        r.raise_for_status()
         return r.json()
 
 
@@ -609,12 +591,62 @@ def _execute_actions(trello, trace_id, actions):
             })
 
 
+SPEC_CONSOLIDATION_THRESHOLD = 14_000
+SPEC_CONSOLIDATION_TARGET = 10_000
+
+
+def consolidate_spec(current_spec):
+    """Compress a spec that has grown too large (sawtooth pattern).
+
+    Called when spec exceeds SPEC_CONSOLIDATION_THRESHOLD after an update.
+    Uses Haiku with an explicit size target to aggressively compress.
+    """
+    client = _get_client()
+    response = client.messages.create(
+        model=SPEC_MODEL,
+        max_tokens=8000,
+        messages=[{"role": "user", "content": f"""You are a fitness coach consolidating your client notebook. The spec below has grown too long and must be compressed.
+
+## Current Spec ({len(current_spec)} characters)
+{current_spec}
+
+## Task
+Rewrite this spec to fit within {SPEC_CONSOLIDATION_TARGET} characters. This is a hard limit.
+
+## Priority (highest to lowest)
+1. Active goals, current training program, and schedule
+2. Recent PRs, progress trends, and body metrics
+3. Preferences, constraints, and communication style
+4. Supplement and nutrition plans
+5. Historical context and resolved items
+
+## Compression Rules
+- Merge redundant sections
+- Compress daily details into trends (e.g. "bench progressed 135→185 over 6 weeks")
+- Drop completed one-off items (old grocery lists, past event prep)
+- Replace verbose descriptions with concise bullet points
+- Keep the same markdown formatting style
+- Return ONLY the updated spec text, no commentary or markdown fences"""}],
+    )
+    return response.content[0].text.strip()
+
+
 def _apply_spec_if_needed(trello, trace_id, spec, instruction):
     """Apply spec update instruction via Haiku if instruction is provided."""
     if not instruction:
         return
     try:
         updated_spec = apply_spec_update(spec, instruction)
+
+        # Sawtooth: consolidate if spec has grown too large
+        if len(updated_spec) > SPEC_CONSOLIDATION_THRESHOLD:
+            pre_len = len(updated_spec)
+            updated_spec = consolidate_spec(updated_spec)
+            log_structured(trace_id, "spec_consolidated", metadata={
+                "before": pre_len,
+                "after": len(updated_spec),
+            })
+
         trello.update_board_desc(updated_spec)
         log_structured(trace_id, "spec_updated", metadata={
             "instruction": instruction[:120],

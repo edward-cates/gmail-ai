@@ -5,6 +5,8 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
+import requests
+
 # Load cloud-run/coach/main.py as a unique module name to avoid
 # collision with other main.py modules.
 _spec = importlib.util.spec_from_file_location(
@@ -511,3 +513,93 @@ class TestHandleReply:
     def test_skips_empty_comment(self):
         # Should not raise — just skips
         coach.handle_reply("trace-4")
+
+
+class TestConsolidateSpec:
+    """Tests for consolidate_spec() — sawtooth compression."""
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.object(coach.anthropic, "Anthropic")
+    def test_consolidates_spec(self, mock_cls):
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.messages.create.return_value = _mock_api_response(
+            "# Compressed Spec\n- Goals: gain mass"
+        )
+
+        result = coach.consolidate_spec("x" * 15000)
+        assert result == "# Compressed Spec\n- Goals: gain mass"
+        assert mock_client.messages.create.call_args[1]["model"] == "claude-haiku-4-5-20251001"
+        # Verify the prompt mentions the target size
+        prompt = mock_client.messages.create.call_args[1]["messages"][0]["content"]
+        assert "10000" in prompt or "10,000" in prompt
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.object(coach.anthropic, "Anthropic")
+    def test_apply_spec_triggers_consolidation(self, mock_cls):
+        """Spec update producing >14K chars should trigger consolidation."""
+        mock_trello = MagicMock()
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        # First call: apply_spec_update returns oversized spec
+        # Second call: consolidate_spec returns compressed spec
+        big_spec = "# Big\n" + "x" * 14500
+        mock_client.messages.create.side_effect = [
+            _mock_api_response(big_spec),
+            _mock_api_response("# Compressed"),
+        ]
+
+        coach._apply_spec_if_needed(mock_trello, "t1", "# Spec", "add lots of stuff")
+
+        assert mock_client.messages.create.call_count == 2
+        mock_trello.update_board_desc.assert_called_once_with("# Compressed")
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.object(coach.anthropic, "Anthropic")
+    def test_apply_spec_skips_consolidation_under_threshold(self, mock_cls):
+        """Spec update under 14K chars should not trigger consolidation."""
+        mock_trello = MagicMock()
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.messages.create.return_value = _mock_api_response("# Small spec")
+
+        coach._apply_spec_if_needed(mock_trello, "t1", "# Spec", "small tweak")
+
+        # Only one LLM call (apply_spec_update), no consolidation
+        assert mock_client.messages.create.call_count == 1
+        mock_trello.update_board_desc.assert_called_once_with("# Small spec")
+
+
+class TestTrelloClientCredentialSanitization:
+    """Tests for TrelloClient._request credential sanitization."""
+
+    @patch.dict("os.environ", {
+        "TRELLO_API_KEY": "secret-key-123",
+        "TRELLO_TOKEN": "secret-token-456",
+        "TRELLO_COACH_BOARD_ID": "board123",
+    })
+    @patch.object(coach.requests, "request")
+    def test_request_sanitizes_credentials_on_error(self, mock_request):
+        """HTTP errors should not contain API key or token."""
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.reason = "Bad Request"
+        mock_response.url = (
+            "https://api.trello.com/1/boards/board123"
+            "?key=secret-key-123&token=secret-token-456"
+        )
+        mock_response.raise_for_status.side_effect = requests.HTTPError(
+            response=mock_response,
+        )
+        mock_request.return_value = mock_response
+
+        client = coach.TrelloClient()
+        try:
+            client.get_board_desc()
+            assert False, "Should have raised"
+        except requests.HTTPError as e:
+            error_msg = str(e)
+            assert "secret-key-123" not in error_msg
+            assert "secret-token-456" not in error_msg
+            assert "400" in error_msg
+            assert "Bad Request" in error_msg
