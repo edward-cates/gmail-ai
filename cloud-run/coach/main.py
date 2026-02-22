@@ -678,7 +678,7 @@ def consolidate_spec(current_spec):
     """
     client = _get_client()
     response = client.messages.create(
-        model=SPEC_MODEL,
+        model=MODEL,
         max_tokens=8000,
         messages=[{"role": "user", "content": f"""You are a fitness coach consolidating your client notebook. The spec below has grown too long and must be compressed.
 

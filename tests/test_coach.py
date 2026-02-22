@@ -600,7 +600,7 @@ class TestConsolidateSpec:
 
         result = coach.consolidate_spec("x" * 15000)
         assert result == "# Compressed Spec\n- Goals: gain mass"
-        assert mock_client.messages.create.call_args[1]["model"] == "claude-haiku-4-5-20251001"
+        assert mock_client.messages.create.call_args[1]["model"] == "claude-opus-4-6"
         # Verify the prompt mentions the target size
         prompt = mock_client.messages.create.call_args[1]["messages"][0]["content"]
         assert "10000" in prompt or "10,000" in prompt
