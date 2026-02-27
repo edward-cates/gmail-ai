@@ -1,13 +1,13 @@
 """Muscle Growth Coach - Cloud Run Job.
 
-Trello-based coaching agent. Two modes:
-- morning: Read board (spec + card history), generate exercise + nutrition cards
-- reply: Read board desc + card comments, respond to user's comment
+Trello-based coaching agent using an agentic tool-use loop. Two modes:
+- morning: Read board summary, create exercise + nutrition + forum cards via tools
+- reply: Read card context, respond to user's comment via tools
 
-Board has three lists: Exercise, Nutrition, Forum.
+Board has four lists: Exercise, Nutrition, Forum, Memories.
 
 Reads COACH_MODE from environment:
-- "morning": Create daily exercise card + nutrition card
+- "morning": Create daily exercise card + nutrition card + forum card
 - "reply": Process user comment on a card and respond
 """
 
@@ -254,58 +254,6 @@ def _comment_role(text):
     return "Coach" if text.startswith(COACH_PREFIX) else "Client"
 
 
-def read_board_context(trello):
-    """Read full board context: all non-archived cards with their comments.
-
-    Returns a formatted string with all cards and conversations,
-    including which list each card belongs to, card IDs, and checklist items.
-    Excludes Memories list cards (read separately via read_memories).
-    """
-    cards = trello.get_cards()
-
-    # Build list ID → name mapping
-    lists = trello.get_lists()
-    list_names = {lst["id"]: lst["name"] for lst in lists}
-
-    # Find Memories list ID to exclude those cards
-    memories_id = None
-    for lst in lists:
-        if lst["name"].lower() == "memories":
-            memories_id = lst["id"]
-            break
-
-    lines = []
-    for card in cards:
-        if card.get("idList") == memories_id:
-            continue
-        list_name = list_names.get(card.get("idList"), "Unknown")
-        lines.append(f"### [{list_name}] {card['name']}  (card_id: {card['id']})")
-        if card.get("desc"):
-            lines.append(card["desc"][:500])
-
-        # Include checklist items with IDs and states
-        try:
-            checklists = trello.get_card_checklists(card["id"])
-            for cl in checklists:
-                for item in cl.get("checkItems", []):
-                    state = "x" if item.get("state") == "complete" else " "
-                    lines.append(
-                        f"- [{state}] {item['name']}  (item_id: {item['id']})"
-                    )
-        except Exception:
-            pass  # Skip if checklists fail
-
-        comments = trello.get_card_comments(card["id"])
-        for comment in comments:
-            ts = _utc_to_ct(comment.get("date", ""))
-            text = comment.get("data", {}).get("text", "")
-            role = _comment_role(text)
-            lines.append(f"[{ts}] {role}: {text}")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
 def read_memories(trello):
     """Read all memory cards and their comments from the Memories list."""
     lists = trello.get_lists()
@@ -358,6 +306,35 @@ def read_card_context(trello, card_id):
     return "\n".join(lines)
 
 
+def build_board_summary(trello):
+    """Build lightweight board summary: card titles + IDs + list membership + last_activity.
+
+    Excludes Memories list cards (read separately via read_memories).
+    """
+    cards = trello.get_cards()
+    lists = trello.get_lists()
+    list_names = {lst["id"]: lst["name"] for lst in lists}
+
+    memories_id = None
+    for lst in lists:
+        if lst["name"].lower() == "memories":
+            memories_id = lst["id"]
+            break
+
+    lines = []
+    for card in cards:
+        if card.get("idList") == memories_id:
+            continue
+        list_name = list_names.get(card.get("idList"), "Unknown")
+        last_activity = _utc_to_ct(card.get("dateLastActivity", ""))
+        lines.append(
+            f"- [{list_name}] {card['name']}  "
+            f"(card_id: {card['id']}, last_activity: {last_activity})"
+        )
+
+    return "\n".join(lines)
+
+
 # --- Claude ---
 
 
@@ -367,21 +344,6 @@ def _get_client():
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set")
     return anthropic.Anthropic(api_key=api_key)
-
-
-def _parse_json_response(content):
-    """Parse Claude's JSON response, handling markdown fences."""
-    content = content.strip()
-    if "```" in content:
-        content = content.split("```")[1]
-        if content.startswith("json"):
-            content = content[4:]
-        content = content.strip()
-    if not content.startswith("{"):
-        match = re.search(r"\{", content)
-        if match:
-            content = content[match.start():]
-    return json.loads(content)
 
 
 def apply_spec_update(current_spec, instruction):
@@ -411,259 +373,6 @@ def apply_spec_update(current_spec, instruction):
 - Return ONLY the updated spec text, no commentary or markdown fences"""}],
     )
     return response.content[0].text.strip()
-
-
-def generate_morning_cards(spec, board_context, memories=""):
-    """Generate daily exercise and nutrition cards."""
-    client = _get_client()
-
-    now_ct = datetime.now(tz=CT)
-    day_of_week = now_ct.strftime("%A")
-    date_str = now_ct.strftime("%B %d, %Y")
-    time_str = now_ct.strftime("%-I:%M %p").lower()
-
-    prompt = f"""You are a muscle growth coach managing a client's training via a Trello board.
-Each morning you create cards for the day's training and nutrition.
-
-Today is {day_of_week}, {date_str}. Current time: {time_str} Central.
-
-## Board Structure
-The board has four lists:
-- **Exercise** — one card per workout (title, full routine in description, checklist of exercises)
-- **Nutrition** — cards for meals, grocery runs, supplements (title, description, checklist of items)
-- **Forum** — daily check-in card for open conversation throughout the day
-- **Memories** — long-term memory cards organized by category (one card per topic, comments are individual memories)
-
-## Client Spec (board description — your working plan for this client)
-{spec or "(No spec yet — introduce yourself and ask about their goals in the exercise comment)"}
-
-## Memories (long-term factual reference)
-{memories or "(No memories yet)"}
-
-## Recent Board Activity (all cards and conversations)
-{board_context or "(First interaction — no history yet)"}
-
-## Your Task
-Create today's exercise card, nutrition card, and a Forum check-in card. Consider:
-- What day of the week it is (training day vs rest day per their schedule)
-- What happened in recent conversations (soreness, PRs, skipped meals, injuries)
-- Their current phase/goals from the spec
-- Progressive overload: increment weights/volume based on recent performance
-- Nutrition to support their training (meals, macros, grocery needs)
-
-## Rules
-- Be specific to THEIR program — exercises, weights, sets, reps, rest periods
-- Include warm-up guidance if relevant
-- The exercise comment should be conversational and specific (not generic motivation)
-- Nutrition checklist items should be actionable (meals to eat, items to buy)
-- If the spec is empty, introduce yourself and ask what they're working on
-- On rest days, skip the exercise card (set to null) but still provide nutrition
-- The forum card is a daily check-in — open-ended prompt for the client to message throughout the day
-- The forum comment should be conversational: ask how they're feeling, follow up on yesterday, etc.
-- Exercise or nutrition can be null if not applicable; always create a forum card
-
-## Two-Tier Memory System
-You have two places to store information:
-
-**Spec** (board description) — your working document. Keep it concise:
-- Current training program and schedule
-- Active goals and preferences
-- Plans and decisions that change over time
-- Update via "spec_update_instruction". Also prune stale info, compress daily details into trends, and remove completed one-off tasks.
-
-**Memories** (Memories list) — factual records that accumulate. Store critical facts only:
-- Personal records (PRs, body weight milestones)
-- Injury history and recovery notes
-- Key client info (schedule constraints, equipment access, dietary restrictions)
-- Supplement protocols and changes
-- To add a memory: use a "comment" action on an existing memory card, or "create_card" on the Memories list for a new category.
-- Don't store everything — only facts you'd actually reference later when coaching.
-
-## Board Actions
-You can take actions on existing cards or create new ones. Available actions:
-- {{"action": "archive_card", "card_id": "..."}} — archive a card
-- {{"action": "check_item", "card_id": "...", "item_id": "..."}} — check off a checklist item
-- {{"action": "uncheck_item", "card_id": "...", "item_id": "..."}} — uncheck a checklist item
-- {{"action": "move_card", "card_id": "...", "list": "Exercise|Nutrition|Forum|Memories"}} — move a card
-- {{"action": "comment", "card_id": "...", "text": "..."}} — comment on an existing card
-- {{"action": "update_card", "card_id": "...", "name": "...", "desc": "..."}} — update card name/desc (both optional)
-- {{"action": "create_card", "list": "Exercise|Nutrition|Forum|Memories", "title": "...", "description": "...", "checklist": ["item1", "item2"], "comment": "..."}} — create a new card (description, checklist, comment are optional)
-
-## Output
-Respond with JSON only:
-{{
-    "exercise": {{
-        "title": "{day_of_week}, {date_str} — [Focus Area]",
-        "description": "full markdown workout description",
-        "checklist": ["exercise checklist items like 'Bench Press 4x8 @ 185'"],
-        "comment": "conversational coach message"
-    }},
-    "nutrition": {{
-        "title": "{day_of_week}, {date_str} — Nutrition",
-        "description": "meal plan / nutrition notes in markdown",
-        "checklist": ["actionable items like 'Meal 1: Oatmeal + whey (40g protein)'"]
-    }},
-    "forum": {{
-        "title": "{day_of_week}, {date_str} — Check In",
-        "description": "",
-        "comment": "conversational check-in message"
-    }},
-    "actions": [],
-    "spec_update_instruction": null or "brief description of what to change in the spec"
-}}
-Either "exercise" or "nutrition" can be null if not applicable for today. Always include "forum".
-"actions" is an array of board actions to take (can be empty).
-"spec_update_instruction" is a brief description — NOT the full spec."""
-
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=8000,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return _parse_json_response(response.content[0].text)
-
-
-def generate_reply(spec, board_context, card_context, user_comment, card_name, memories=""):
-    """Process user comment and generate reply + optional spec updates."""
-    client = _get_client()
-
-    now_ct = datetime.now(tz=CT)
-    day_of_week = now_ct.strftime("%A")
-    time_str = now_ct.strftime("%-I:%M %p").lower()
-
-    prompt = f"""You are a muscle growth coach communicating with your client via Trello card comments.
-Your client just commented on a card. Read their message and respond helpfully.
-
-Today is {day_of_week}. Current time: {time_str} Central.
-
-## Board Structure
-The board has four lists:
-- **Exercise** — workout cards (one per session)
-- **Nutrition** — meal plans, grocery lists, supplement tracking
-- **Forum** — ongoing discussion topics
-- **Memories** — long-term memory cards organized by category (one card per topic, comments are individual memories)
-
-## Client Spec (board description — your working plan)
-{spec or "(No spec yet)"}
-
-## Memories (long-term factual reference)
-{memories or "(No memories yet)"}
-
-## Full Board Activity (all cards and conversations)
-{board_context or "(No board history yet)"}
-
-## Current Card Context (card: {card_name})
-{card_context or "(No prior conversation on this card)"}
-
-## New Comment from Client
-{user_comment}
-
-## Your Task
-1. Understand what they're telling you or asking
-2. Respond with helpful, specific coaching advice
-3. Update spec and/or memories as needed
-
-## Rules
-- Be conversational but knowledgeable
-- If they report a workout, acknowledge it specifically
-- If they ask a question, give a direct answer then brief explanation
-- If they share a concern (injury, plateau, motivation), address it with empathy and a plan
-
-## Two-Tier Memory System
-You have two places to store information:
-
-**Spec** (board description) — your working document. Keep it concise:
-- Current training program and schedule
-- Active goals and preferences
-- Plans and decisions that change over time
-- Update via "spec_update_instruction". Also prune stale info, compress daily details into trends, and remove completed one-off tasks.
-
-**Memories** (Memories list) — factual records that accumulate. Store critical facts only:
-- Personal records (PRs, body weight milestones)
-- Injury history and recovery notes
-- Key client info (schedule constraints, equipment access, dietary restrictions)
-- Supplement protocols and changes
-- To add a memory: use a "comment" action on an existing memory card, or "create_card" on the Memories list for a new category.
-- Don't store everything — only facts you'd actually reference later when coaching.
-
-## Board Actions
-You can take actions on existing cards or create new ones. Available actions:
-- {{"action": "archive_card", "card_id": "..."}} — archive a card
-- {{"action": "check_item", "card_id": "...", "item_id": "..."}} — check off a checklist item
-- {{"action": "uncheck_item", "card_id": "...", "item_id": "..."}} — uncheck a checklist item
-- {{"action": "move_card", "card_id": "...", "list": "Exercise|Nutrition|Forum|Memories"}} — move a card
-- {{"action": "comment", "card_id": "...", "text": "..."}} — comment on an existing card
-- {{"action": "update_card", "card_id": "...", "name": "...", "desc": "..."}} — update card name/desc (both optional)
-- {{"action": "create_card", "list": "Exercise|Nutrition|Forum|Memories", "title": "...", "description": "...", "checklist": ["item1", "item2"], "comment": "..."}} — create a new card (description, checklist, comment are optional)
-
-Use create_card when the client asks for a new workout plan, meal plan, grocery list, or any other card-worthy content.
-For example, if they say "can you make me a leg day card?", create one on the Exercise list.
-
-## Output
-Respond with JSON only:
-{{
-    "reaction": "emoji shortname reacting to the client's message (e.g. muscle, fire, eyes, tada, heart, thumbsup, thinking_face, saluting_face, clap)",
-    "message": "your reply comment text",
-    "actions": [],
-    "spec_update_instruction": null or "brief description of what to change in the spec"
-}}
-"reaction" is an emoji shortname — pick one that fits your reaction to what they said.
-"actions" is an array of board actions to take (can be empty).
-"spec_update_instruction" is a brief description — NOT the full spec."""
-
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=8000,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return _parse_json_response(response.content[0].text)
-
-
-# --- Handlers ---
-
-
-def _execute_actions(trello, trace_id, actions):
-    """Execute board actions returned by the coach."""
-    for action in actions:
-        action_type = action.get("action", "")
-        try:
-            if action_type == "archive_card":
-                trello.archive_card(action["card_id"])
-            elif action_type == "check_item":
-                trello.set_check_item_state(action["card_id"], action["item_id"], "complete")
-            elif action_type == "uncheck_item":
-                trello.set_check_item_state(action["card_id"], action["item_id"], "incomplete")
-            elif action_type == "move_card":
-                list_id = trello.get_list_id(action["list"])
-                trello.move_card(action["card_id"], list_id)
-            elif action_type == "comment":
-                trello.add_comment(action["card_id"], action["text"])
-            elif action_type == "create_card":
-                _create_card_with_checklist(trello, trace_id, action["list"], {
-                    "title": action["title"],
-                    "description": action.get("description", ""),
-                    "checklist": action.get("checklist", []),
-                    "comment": action.get("comment", ""),
-                })
-            elif action_type == "update_card":
-                fields = {}
-                if action.get("name"):
-                    fields["name"] = action["name"]
-                if action.get("desc"):
-                    fields["desc"] = action["desc"]
-                if fields:
-                    trello.update_card(action["card_id"], **fields)
-            else:
-                logger.warning(f"[{trace_id}] Unknown action: {action_type}")
-                continue
-            log_structured(trace_id, f"action_{action_type}", metadata={
-                "card_id": action.get("card_id", ""),
-            })
-        except Exception as e:
-            logger.error(f"[{trace_id}] Action {action_type} failed: {e}")
-            log_structured(trace_id, f"action_{action_type}", "failure", {
-                "error": str(e),
-            })
 
 
 SPEC_CONSOLIDATION_THRESHOLD = 14_000
@@ -757,8 +466,316 @@ def _create_card_with_checklist(trello, trace_id, list_name, card_data):
     return card
 
 
+# --- Agent ---
+
+
+COACH_TOOLS = [
+    {
+        "name": "read_card",
+        "description": "Read a card's full details: name, description, checklist items with IDs and completion states, and all comments with timestamps and Coach/Client roles.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "card_id": {"type": "string", "description": "Trello card ID"},
+            },
+            "required": ["card_id"],
+        },
+    },
+    {
+        "name": "archive_card",
+        "description": "Archive (close) a card.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "card_id": {"type": "string", "description": "Trello card ID"},
+            },
+            "required": ["card_id"],
+        },
+    },
+    {
+        "name": "check_item",
+        "description": "Check off a checklist item as complete.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "card_id": {"type": "string", "description": "Trello card ID"},
+                "item_id": {"type": "string", "description": "Checklist item ID"},
+            },
+            "required": ["card_id", "item_id"],
+        },
+    },
+    {
+        "name": "uncheck_item",
+        "description": "Uncheck a checklist item (mark incomplete).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "card_id": {"type": "string", "description": "Trello card ID"},
+                "item_id": {"type": "string", "description": "Checklist item ID"},
+            },
+            "required": ["card_id", "item_id"],
+        },
+    },
+    {
+        "name": "move_card",
+        "description": "Move a card to a different list.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "card_id": {"type": "string", "description": "Trello card ID"},
+                "list_name": {
+                    "type": "string",
+                    "description": "Target list name (Exercise, Nutrition, Forum, or Memories)",
+                },
+            },
+            "required": ["card_id", "list_name"],
+        },
+    },
+    {
+        "name": "comment_on_card",
+        "description": "Add a comment to a card. Auto-prefixed with coach marker.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "card_id": {"type": "string", "description": "Trello card ID"},
+                "text": {"type": "string", "description": "Comment text"},
+            },
+            "required": ["card_id", "text"],
+        },
+    },
+    {
+        "name": "update_card",
+        "description": "Update a card's name and/or description.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "card_id": {"type": "string", "description": "Trello card ID"},
+                "name": {"type": "string", "description": "New card name"},
+                "desc": {"type": "string", "description": "New card description"},
+            },
+            "required": ["card_id"],
+        },
+    },
+    {
+        "name": "create_card",
+        "description": "Create a new card on a list with optional description, checklist, and comment.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "list_name": {
+                    "type": "string",
+                    "description": "List name (Exercise, Nutrition, Forum, or Memories)",
+                },
+                "title": {"type": "string", "description": "Card title"},
+                "description": {"type": "string", "description": "Card description"},
+                "checklist": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Checklist items",
+                },
+                "comment": {"type": "string", "description": "Initial comment on the card"},
+            },
+            "required": ["list_name", "title"],
+        },
+    },
+    {
+        "name": "update_spec",
+        "description": "Update the client spec (board description). Provide a brief plain-English instruction describing what to change.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "instruction": {
+                    "type": "string",
+                    "description": "Brief description of what to change in the spec",
+                },
+            },
+            "required": ["instruction"],
+        },
+    },
+    {
+        "name": "add_reaction",
+        "description": "React to a comment with an emoji.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action_id": {"type": "string", "description": "Trello action (comment) ID"},
+                "emoji": {
+                    "type": "string",
+                    "description": "Emoji shortname (e.g. muscle, fire, thumbsup, heart)",
+                },
+            },
+            "required": ["action_id", "emoji"],
+        },
+    },
+]
+
+
+def execute_tool(trello, trace_id, tool_name, tool_input):
+    """Execute a tool call and return the result string. Errors returned as strings."""
+    try:
+        if tool_name == "read_card":
+            card_id = tool_input["card_id"]
+            card = trello.get_card(card_id)
+            lines = [f"### Card: {card['name']}"]
+            if card.get("desc"):
+                lines.append(card["desc"][:500])
+            try:
+                checklists = trello.get_card_checklists(card_id)
+                for cl in checklists:
+                    for item in cl.get("checkItems", []):
+                        state = "x" if item.get("state") == "complete" else " "
+                        lines.append(
+                            f"- [{state}] {item['name']}  (item_id: {item['id']})"
+                        )
+            except Exception:
+                pass
+            lines.append("")
+            comments = trello.get_card_comments(card_id)
+            for comment in comments:
+                ts = _utc_to_ct(comment.get("date", ""))
+                text = comment.get("data", {}).get("text", "")
+                role = _comment_role(text)
+                lines.append(f"[{ts}] {role}: {text}")
+            result = "\n".join(lines)
+            log_structured(trace_id, "tool_read_card", metadata={
+                "card_id": card_id, "length": len(result),
+            })
+            return result
+
+        elif tool_name == "archive_card":
+            trello.archive_card(tool_input["card_id"])
+            log_structured(trace_id, "tool_archive_card", metadata={
+                "card_id": tool_input["card_id"],
+            })
+            return "Card archived."
+
+        elif tool_name == "check_item":
+            trello.set_check_item_state(
+                tool_input["card_id"], tool_input["item_id"], "complete",
+            )
+            log_structured(trace_id, "tool_check_item", metadata={
+                "card_id": tool_input["card_id"], "item_id": tool_input["item_id"],
+            })
+            return "Item checked."
+
+        elif tool_name == "uncheck_item":
+            trello.set_check_item_state(
+                tool_input["card_id"], tool_input["item_id"], "incomplete",
+            )
+            log_structured(trace_id, "tool_uncheck_item", metadata={
+                "card_id": tool_input["card_id"], "item_id": tool_input["item_id"],
+            })
+            return "Item unchecked."
+
+        elif tool_name == "move_card":
+            list_id = trello.get_list_id(tool_input["list_name"])
+            trello.move_card(tool_input["card_id"], list_id)
+            log_structured(trace_id, "tool_move_card", metadata={
+                "card_id": tool_input["card_id"], "list": tool_input["list_name"],
+            })
+            return f"Card moved to {tool_input['list_name']}."
+
+        elif tool_name == "comment_on_card":
+            trello.add_comment(tool_input["card_id"], tool_input["text"])
+            log_structured(trace_id, "tool_comment", metadata={
+                "card_id": tool_input["card_id"], "length": len(tool_input["text"]),
+            })
+            return "Comment posted."
+
+        elif tool_name == "update_card":
+            fields = {}
+            if tool_input.get("name"):
+                fields["name"] = tool_input["name"]
+            if tool_input.get("desc"):
+                fields["desc"] = tool_input["desc"]
+            if fields:
+                trello.update_card(tool_input["card_id"], **fields)
+            log_structured(trace_id, "tool_update_card", metadata={
+                "card_id": tool_input["card_id"], "fields": list(fields.keys()),
+            })
+            return "Card updated."
+
+        elif tool_name == "create_card":
+            card = _create_card_with_checklist(trello, trace_id, tool_input["list_name"], {
+                "title": tool_input["title"],
+                "description": tool_input.get("description", ""),
+                "checklist": tool_input.get("checklist", []),
+                "comment": tool_input.get("comment", ""),
+            })
+            return f"Card created (card_id: {card['id']})."
+
+        elif tool_name == "update_spec":
+            current_spec = trello.get_board_desc()
+            _apply_spec_if_needed(trello, trace_id, current_spec, tool_input["instruction"])
+            return "Spec updated."
+
+        elif tool_name == "add_reaction":
+            trello.add_reaction(tool_input["action_id"], tool_input["emoji"])
+            log_structured(trace_id, "tool_add_reaction", metadata={
+                "action_id": tool_input["action_id"], "emoji": tool_input["emoji"],
+            })
+            return "Reaction added."
+
+        else:
+            return f"Unknown tool: {tool_name}"
+
+    except Exception as e:
+        logger.error(f"[{trace_id}] Tool {tool_name} failed: {e}")
+        return f"Error: {e}"
+
+
+def run_agent(client, trello, trace_id, system_prompt, user_message, tools=None):
+    """Run an agentic tool-use loop until the model stops or hits the iteration cap."""
+    if tools is None:
+        tools = COACH_TOOLS
+
+    messages = [{"role": "user", "content": user_message}]
+
+    for iteration in range(25):
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=8000,
+            system=system_prompt,
+            tools=tools,
+            messages=messages,
+        )
+
+        if response.stop_reason == "end_turn":
+            log_structured(trace_id, "agent_complete", metadata={
+                "iterations": iteration + 1,
+            })
+            return
+
+        if response.stop_reason != "tool_use":
+            log_structured(trace_id, "agent_stop", metadata={
+                "stop_reason": response.stop_reason,
+                "iterations": iteration + 1,
+            })
+            return
+
+        # Process tool calls
+        messages.append({"role": "assistant", "content": response.content})
+
+        tool_results = []
+        for block in response.content:
+            if block.type == "tool_use":
+                result = execute_tool(trello, trace_id, block.name, block.input)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+        messages.append({"role": "user", "content": tool_results})
+
+    log_structured(trace_id, "agent_max_iterations")
+
+
+# --- Handlers ---
+
+
 def handle_morning(trace_id):
-    """Generate and post daily exercise and nutrition cards."""
+    """Generate and post daily exercise and nutrition cards via agent loop."""
     try:
         trello = TrelloClient()
 
@@ -768,34 +785,67 @@ def handle_morning(trace_id):
         memories = read_memories(trello)
         log_structured(trace_id, "read_memories", metadata={"length": len(memories)})
 
-        board_context = read_board_context(trello)
-        log_structured(trace_id, "read_context", metadata={"length": len(board_context)})
+        board_summary = build_board_summary(trello)
+        log_structured(trace_id, "read_summary", metadata={"length": len(board_summary)})
 
-        result = generate_morning_cards(spec, board_context, memories)
+        now_ct = datetime.now(tz=CT)
+        day_of_week = now_ct.strftime("%A")
+        date_str = now_ct.strftime("%B %d, %Y")
+        time_str = now_ct.strftime("%-I:%M %p").lower()
 
-        log_structured(trace_id, "generate_morning", metadata={
-            "has_exercise": result.get("exercise") is not None,
-            "has_nutrition": result.get("nutrition") is not None,
-            "has_forum": result.get("forum") is not None,
-        })
+        system_prompt = f"""You are a muscle growth coach managing a client's training via a Trello board.
+Each morning you create cards for the day's training and nutrition.
 
-        # Create exercise card
-        if result.get("exercise"):
-            _create_card_with_checklist(trello, trace_id, "Exercise", result["exercise"])
+Today is {day_of_week}, {date_str}. Current time: {time_str} Central.
 
-        # Create nutrition card
-        if result.get("nutrition"):
-            _create_card_with_checklist(trello, trace_id, "Nutrition", result["nutrition"])
+## Board Structure
+- **Exercise** — one card per workout (title, routine in description, checklist of exercises)
+- **Nutrition** — cards for meals, grocery runs, supplements (title, description, checklist)
+- **Forum** — daily check-in card for open conversation throughout the day
+- **Memories** — long-term memory cards organized by category (one card per topic, comments are individual memories)
 
-        # Create forum check-in card
-        if result.get("forum"):
-            _create_card_with_checklist(trello, trace_id, "Forum", result["forum"])
+## Your Task
+1. Use read_card to inspect any recent cards that look relevant
+2. Archive old completed cards from previous days
+3. Create today's cards using create_card:
+   - Exercise card (skip on rest days): title like "{day_of_week}, {date_str} — [Focus Area]", description with full workout, checklist of exercises with weights/sets/reps, conversational comment
+   - Nutrition card: title like "{day_of_week}, {date_str} — Nutrition", description with meal plan, checklist of actionable items
+   - Forum check-in card: title like "{day_of_week}, {date_str} — Check In", conversational comment prompting the client
+4. Update the spec or add memories as needed
 
-        # Execute board actions
-        _execute_actions(trello, trace_id, result.get("actions", []))
+## Rules
+- Be specific to THEIR program — exercises, weights, sets, reps, rest periods
+- Include warm-up guidance if relevant
+- Exercise comments should be conversational and specific (not generic motivation)
+- Nutrition checklist items should be actionable (meals to eat, items to buy)
+- If the spec is empty, introduce yourself and ask what they're working on
+- On rest days, skip the exercise card but still provide nutrition and forum
+- The forum card is a daily check-in — open-ended prompt for the client
 
-        # Update spec if needed
-        _apply_spec_if_needed(trello, trace_id, spec, result.get("spec_update_instruction"))
+## Two-Tier Memory System
+**Spec** (board description) — your working document:
+- Current training program and schedule
+- Active goals and preferences
+- Plans and decisions that change over time
+- Update via update_spec tool. Prune stale info, compress daily details into trends.
+
+**Memories** (Memories list) — factual records that accumulate:
+- Personal records (PRs, body weight milestones), injury history, recovery notes
+- Key client info (schedule constraints, equipment access, dietary restrictions)
+- Use comment_on_card on an existing memory card, or create_card on the Memories list for a new category
+- Only store facts you'd actually reference later when coaching."""
+
+        user_message = f"""## Client Spec
+{spec or "(No spec yet — introduce yourself and ask about their goals)"}
+
+## Memories
+{memories or "(No memories yet)"}
+
+## Board Summary (use read_card to see full details)
+{board_summary or "(No cards on board — first interaction)"}"""
+
+        client = _get_client()
+        run_agent(client, trello, trace_id, system_prompt, user_message)
 
     except Exception as e:
         logger.error(f"[{trace_id}] Morning handler failed: {e}", exc_info=True)
@@ -804,7 +854,7 @@ def handle_morning(trace_id):
 
 
 def handle_reply(trace_id):
-    """Process user comment on a card and respond."""
+    """Process user comment on a card and respond via agent loop."""
     comment_text = os.getenv("COMMENT_TEXT", "")
     card_id = os.getenv("CARD_ID", "")
     action_id = os.getenv("ACTION_ID", "")
@@ -822,44 +872,88 @@ def handle_reply(trace_id):
         memories = read_memories(trello)
         log_structured(trace_id, "read_memories", metadata={"length": len(memories)})
 
-        board_context = read_board_context(trello)
+        board_summary = build_board_summary(trello)
+        log_structured(trace_id, "read_summary", metadata={"length": len(board_summary)})
+
+        # Pre-load the card being replied to (always relevant)
         card_context = read_card_context(trello, card_id)
         card = trello.get_card(card_id)
         card_name = card.get("name", "Unknown")
         log_structured(trace_id, "read_context", metadata={
             "card": card_name[:80],
-            "board_length": len(board_context),
+            "summary_length": len(board_summary),
             "card_length": len(card_context),
         })
 
-        result = generate_reply(spec, board_context, card_context, comment_text, card_name, memories)
+        now_ct = datetime.now(tz=CT)
+        day_of_week = now_ct.strftime("%A")
+        time_str = now_ct.strftime("%-I:%M %p").lower()
 
-        reply_text = result["message"]
-        log_structured(trace_id, "generate_reply", metadata={"length": len(reply_text)})
+        reaction_instruction = ""
+        if action_id:
+            reaction_instruction = (
+                f'\n4. React to their comment using '
+                f'add_reaction(action_id="{action_id}", emoji="...") '
+                f'with a fitting emoji (e.g. muscle, fire, thumbsup, heart, '
+                f'tada, eyes, thinking_face, clap)'
+            )
 
-        # React to the user's comment with the coach's chosen emoji
-        reaction = result.get("reaction", "")
-        if action_id and reaction:
-            try:
-                trello.add_reaction(action_id, reaction)
-            except Exception:
-                pass  # Non-critical
+        system_prompt = f"""You are a muscle growth coach communicating with your client via Trello card comments.
+Your client just commented on a card. Read their message and respond helpfully.
 
-        # Post reply
-        trello.add_comment(card_id, reply_text)
-        log_structured(trace_id, "add_comment", metadata={"length": len(reply_text)})
+Today is {day_of_week}. Current time: {time_str} Central.
 
-        # Execute board actions (skip comment actions on the reply card to avoid duplicates)
-        actions = [
-            a for a in result.get("actions", [])
-            if not (a.get("action") == "comment" and a.get("card_id") == card_id)
-        ]
-        _execute_actions(trello, trace_id, actions)
+## Board Structure
+- **Exercise** — workout cards (one per session)
+- **Nutrition** — meal plans, grocery lists, supplement tracking
+- **Forum** — ongoing discussion topics
+- **Memories** — long-term memory cards organized by category
 
-        # Update spec if needed
-        _apply_spec_if_needed(trello, trace_id, spec, result.get("spec_update_instruction"))
+## Your Task
+1. Understand what the client is telling you or asking
+2. Reply using comment_on_card on the card they commented on (card_id: {card_id})
+3. Take any other actions needed (check items, archive cards, create cards, update spec, add memories){reaction_instruction}
 
-        # React ✅ on user's comment as the very last step — signals job complete
+## Rules
+- Be conversational but knowledgeable
+- If they report a workout, acknowledge it specifically
+- If they ask a question, give a direct answer then brief explanation
+- If they share a concern (injury, plateau, motivation), address it with empathy and a plan
+- Use read_card to inspect other cards if you need more context
+- Use create_card when the client asks for a new workout plan, meal plan, grocery list, etc.
+
+## Two-Tier Memory System
+**Spec** (board description) — your working document:
+- Current training program and schedule
+- Active goals and preferences
+- Plans and decisions that change over time
+- Update via update_spec tool. Prune stale info, compress daily details into trends.
+
+**Memories** (Memories list) — factual records that accumulate:
+- Personal records (PRs, body weight milestones), injury history, recovery notes
+- Key client info (schedule constraints, equipment access, dietary restrictions)
+- Use comment_on_card on an existing memory card, or create_card on the Memories list for a new category
+- Only store facts you'd actually reference later when coaching."""
+
+        user_message = f"""## Client Spec
+{spec or "(No spec yet)"}
+
+## Memories
+{memories or "(No memories yet)"}
+
+## Board Summary (use read_card to see full details)
+{board_summary or "(No cards on board)"}
+
+## Card: {card_name} (card_id: {card_id})
+{card_context}
+
+## New Comment from Client
+{comment_text}"""
+
+        client = _get_client()
+        run_agent(client, trello, trace_id, system_prompt, user_message)
+
+        # React checkmark on user's comment as the very last step — signals job complete
         if action_id:
             try:
                 trello.add_reaction(action_id, "white_check_mark")

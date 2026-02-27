@@ -17,49 +17,6 @@ coach = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(coach)
 
 
-class TestJsonParsing:
-    """Tests for _parse_json_response()."""
-
-    def test_clean_json(self):
-        result = coach._parse_json_response(
-            '{"message": "hello", "spec_updates": null}'
-        )
-        assert result["message"] == "hello"
-        assert result["spec_updates"] is None
-
-    def test_json_with_fences(self):
-        result = coach._parse_json_response(
-            '```json\n{"message": "hi", "spec_updates": null}\n```'
-        )
-        assert result["message"] == "hi"
-
-    def test_json_with_preamble(self):
-        result = coach._parse_json_response(
-            'Here is the response:\n{"message": "yo", "spec_updates": null}'
-        )
-        assert result["message"] == "yo"
-
-    def test_morning_cards_format(self):
-        result = coach._parse_json_response(json.dumps({
-            "exercise": {
-                "title": "Monday, Feb 6 — Push Day",
-                "description": "## Bench Press\n4x8 @ 185",
-                "checklist": ["Bench Press 4x8 @ 185"],
-                "comment": "Let's go!",
-            },
-            "nutrition": {
-                "title": "Monday, Feb 6 — Nutrition",
-                "description": "## Meals",
-                "checklist": ["Meal 1: Oatmeal + whey"],
-            },
-            "actions": [],
-            "spec_update_instruction": None,
-        }))
-        assert result["exercise"]["title"] == "Monday, Feb 6 — Push Day"
-        assert result["exercise"]["checklist"] == ["Bench Press 4x8 @ 185"]
-        assert result["nutrition"]["checklist"] == ["Meal 1: Oatmeal + whey"]
-
-
 class TestUtcToCt:
     """Tests for _utc_to_ct() timestamp conversion."""
 
@@ -77,71 +34,6 @@ class TestUtcToCt:
 
     def test_short_string(self):
         assert coach._utc_to_ct("2026") == "2026"
-
-
-class TestReadBoardContext:
-    """Tests for read_board_context()."""
-
-    def test_formats_cards_and_comments(self):
-        mock_trello = MagicMock()
-        mock_trello.get_lists.return_value = [
-            {"id": "list1", "name": "Exercise"},
-        ]
-        mock_trello.get_cards.return_value = [
-            {"id": "card1", "name": "Monday Push", "desc": "Bench day", "idList": "list1"},
-        ]
-        mock_trello.get_card_checklists.return_value = [
-            {"checkItems": [
-                {"id": "ci1", "name": "Bench 4x8", "state": "complete"},
-                {"id": "ci2", "name": "Incline 3x10", "state": "incomplete"},
-            ]},
-        ]
-        mock_trello.get_card_comments.return_value = [
-            {
-                "date": "2026-02-06T14:00:00",
-                "data": {"text": "Hit 225 on bench!"},
-            },
-            {
-                "date": "2026-02-06T14:05:00",
-                "data": {"text": "**[Coach]** Nice PR!"},
-            },
-        ]
-
-        result = coach.read_board_context(mock_trello)
-        assert "[Exercise] Monday Push" in result
-        assert "card_id: card1" in result
-        assert "[x] Bench 4x8" in result
-        assert "[ ] Incline 3x10" in result
-        assert "item_id: ci1" in result
-        assert "Client:" in result
-        assert "Coach:" in result
-        assert "Hit 225 on bench!" in result
-        assert "Nice PR!" in result
-
-    def test_empty_board(self):
-        mock_trello = MagicMock()
-        mock_trello.get_cards.return_value = []
-        mock_trello.get_lists.return_value = []
-
-        result = coach.read_board_context(mock_trello)
-        assert result == ""
-
-    def test_excludes_memories_cards(self):
-        mock_trello = MagicMock()
-        mock_trello.get_lists.return_value = [
-            {"id": "list1", "name": "Exercise"},
-            {"id": "mem_list", "name": "Memories"},
-        ]
-        mock_trello.get_cards.return_value = [
-            {"id": "c1", "name": "Push Day", "desc": "", "idList": "list1"},
-            {"id": "c2", "name": "PRs", "desc": "", "idList": "mem_list"},
-        ]
-        mock_trello.get_card_checklists.return_value = []
-        mock_trello.get_card_comments.return_value = []
-
-        result = coach.read_board_context(mock_trello)
-        assert "Push Day" in result
-        assert "PRs" not in result
 
 
 class TestReadMemories:
@@ -219,6 +111,50 @@ class TestReadCardContext:
         assert "Feeling sore" in result
 
 
+class TestBuildBoardSummary:
+    """Tests for build_board_summary()."""
+
+    def test_formats_cards_with_list_and_activity(self):
+        mock_trello = MagicMock()
+        mock_trello.get_lists.return_value = [
+            {"id": "list1", "name": "Exercise"},
+        ]
+        mock_trello.get_cards.return_value = [
+            {
+                "id": "c1", "name": "Push Day", "idList": "list1",
+                "dateLastActivity": "2026-02-06T14:00:00.000Z",
+            },
+        ]
+
+        result = coach.build_board_summary(mock_trello)
+        assert "[Exercise] Push Day" in result
+        assert "card_id: c1" in result
+        assert "last_activity:" in result
+
+    def test_excludes_memories_cards(self):
+        mock_trello = MagicMock()
+        mock_trello.get_lists.return_value = [
+            {"id": "list1", "name": "Exercise"},
+            {"id": "mem_list", "name": "Memories"},
+        ]
+        mock_trello.get_cards.return_value = [
+            {"id": "c1", "name": "Push Day", "idList": "list1", "dateLastActivity": ""},
+            {"id": "c2", "name": "PRs", "idList": "mem_list", "dateLastActivity": ""},
+        ]
+
+        result = coach.build_board_summary(mock_trello)
+        assert "Push Day" in result
+        assert "PRs" not in result
+
+    def test_empty_board(self):
+        mock_trello = MagicMock()
+        mock_trello.get_lists.return_value = []
+        mock_trello.get_cards.return_value = []
+
+        result = coach.build_board_summary(mock_trello)
+        assert result == ""
+
+
 def _mock_api_response(text):
     """Create a mock Anthropic API response with the given text."""
     block = MagicMock()
@@ -226,75 +162,6 @@ def _mock_api_response(text):
     resp = MagicMock()
     resp.content = [block]
     return resp
-
-
-class TestGenerateMorningCards:
-    """Tests for generate_morning_cards()."""
-
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
-    @patch.object(coach.anthropic, "Anthropic")
-    def test_returns_cards(self, mock_cls):
-        mock_client = MagicMock()
-        mock_cls.return_value = mock_client
-        mock_client.messages.create.return_value = _mock_api_response(
-            json.dumps({
-                "exercise": {
-                    "title": "Monday — Push Day",
-                    "description": "## Bench\n4x8",
-                    "checklist": ["Bench 4x8"],
-                    "comment": "Let's go!",
-                },
-                "nutrition": {
-                    "title": "Monday — Nutrition",
-                    "description": "## Meals",
-                    "checklist": ["Meal 1: Oatmeal"],
-                },
-                "actions": [],
-                "spec_update_instruction": None,
-            })
-        )
-        result = coach.generate_morning_cards("# Spec\nGoals: gain muscle", "")
-        assert result["exercise"]["title"] == "Monday — Push Day"
-        assert result["exercise"]["checklist"] == ["Bench 4x8"]
-        assert result["nutrition"]["checklist"] == ["Meal 1: Oatmeal"]
-        assert result["spec_update_instruction"] is None
-        assert mock_client.messages.create.call_args[1]["model"] == "claude-opus-4-6"
-
-
-class TestGenerateReply:
-    """Tests for generate_reply()."""
-
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
-    @patch.object(coach.anthropic, "Anthropic")
-    def test_reply_without_spec_update(self, mock_cls):
-        mock_client = MagicMock()
-        mock_cls.return_value = mock_client
-        mock_client.messages.create.return_value = _mock_api_response(
-            json.dumps({
-                "message": "Nice work!",
-                "actions": [],
-                "spec_update_instruction": None,
-            })
-        )
-        result = coach.generate_reply("# Spec", "", "", "Did 3x10 bench at 185", "Push Day")
-        assert result["message"] == "Nice work!"
-        assert result["spec_update_instruction"] is None
-
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
-    @patch.object(coach.anthropic, "Anthropic")
-    def test_reply_with_spec_update_instruction(self, mock_cls):
-        mock_client = MagicMock()
-        mock_cls.return_value = mock_client
-        mock_client.messages.create.return_value = _mock_api_response(
-            json.dumps({
-                "message": "225 5x5 is huge!",
-                "actions": [],
-                "spec_update_instruction": "Update squat PR to 225x5x5",
-            })
-        )
-        result = coach.generate_reply("# Spec", "", "", "Hit 225 for 5x5!", "Leg Day")
-        assert result["spec_update_instruction"] is not None
-        assert "225" in result["spec_update_instruction"]
 
 
 class TestApplySpecUpdate:
@@ -326,217 +193,352 @@ class TestApplySpecUpdate:
         assert result == "# Spec\nUpdated"
 
 
-class TestExecuteActions:
-    """Tests for _execute_actions()."""
+class TestExecuteTool:
+    """Tests for execute_tool()."""
 
-    def test_check_item(self):
+    def test_read_card(self):
         mock_trello = MagicMock()
-        coach._execute_actions(mock_trello, "t1", [
-            {"action": "check_item", "card_id": "c1", "item_id": "i1"},
-        ])
-        mock_trello.set_check_item_state.assert_called_once_with("c1", "i1", "complete")
+        mock_trello.get_card.return_value = {"name": "Push Day", "desc": "Bench"}
+        mock_trello.get_card_checklists.return_value = [
+            {"checkItems": [
+                {"id": "i1", "name": "Bench 4x8", "state": "complete"},
+                {"id": "i2", "name": "Incline 3x10", "state": "incomplete"},
+            ]},
+        ]
+        mock_trello.get_card_comments.return_value = [
+            {"date": "2026-02-06T14:00:00", "data": {"text": "Done!"}},
+        ]
 
-    def test_uncheck_item(self):
-        mock_trello = MagicMock()
-        coach._execute_actions(mock_trello, "t1", [
-            {"action": "uncheck_item", "card_id": "c1", "item_id": "i1"},
-        ])
-        mock_trello.set_check_item_state.assert_called_once_with("c1", "i1", "incomplete")
+        result = coach.execute_tool(mock_trello, "t1", "read_card", {"card_id": "c1"})
+        assert "Push Day" in result
+        assert "[x] Bench 4x8" in result
+        assert "[ ] Incline 3x10" in result
+        assert "item_id: i1" in result
+        assert "Done!" in result
 
     def test_archive_card(self):
         mock_trello = MagicMock()
-        coach._execute_actions(mock_trello, "t1", [
-            {"action": "archive_card", "card_id": "c1"},
-        ])
+        result = coach.execute_tool(mock_trello, "t1", "archive_card", {"card_id": "c1"})
         mock_trello.archive_card.assert_called_once_with("c1")
+        assert "archived" in result.lower()
+
+    def test_check_item(self):
+        mock_trello = MagicMock()
+        result = coach.execute_tool(
+            mock_trello, "t1", "check_item", {"card_id": "c1", "item_id": "i1"},
+        )
+        mock_trello.set_check_item_state.assert_called_once_with("c1", "i1", "complete")
+        assert "checked" in result.lower()
+
+    def test_uncheck_item(self):
+        mock_trello = MagicMock()
+        result = coach.execute_tool(
+            mock_trello, "t1", "uncheck_item", {"card_id": "c1", "item_id": "i1"},
+        )
+        mock_trello.set_check_item_state.assert_called_once_with("c1", "i1", "incomplete")
+        assert "unchecked" in result.lower()
 
     def test_move_card(self):
         mock_trello = MagicMock()
         mock_trello.get_list_id.return_value = "list_exercise"
-        coach._execute_actions(mock_trello, "t1", [
-            {"action": "move_card", "card_id": "c1", "list": "Exercise"},
-        ])
+        result = coach.execute_tool(
+            mock_trello, "t1", "move_card", {"card_id": "c1", "list_name": "Exercise"},
+        )
         mock_trello.move_card.assert_called_once_with("c1", "list_exercise")
+        assert "Exercise" in result
 
-    def test_comment(self):
+    def test_comment_on_card(self):
         mock_trello = MagicMock()
-        coach._execute_actions(mock_trello, "t1", [
-            {"action": "comment", "card_id": "c1", "text": "Great job"},
-        ])
-        mock_trello.add_comment.assert_called_once_with("c1", "Great job")
+        result = coach.execute_tool(
+            mock_trello, "t1", "comment_on_card", {"card_id": "c1", "text": "Nice!"},
+        )
+        mock_trello.add_comment.assert_called_once_with("c1", "Nice!")
+        assert "posted" in result.lower()
 
     def test_update_card(self):
         mock_trello = MagicMock()
-        coach._execute_actions(mock_trello, "t1", [
-            {"action": "update_card", "card_id": "c1", "name": "New Name", "desc": "New desc"},
-        ])
+        result = coach.execute_tool(
+            mock_trello, "t1", "update_card",
+            {"card_id": "c1", "name": "New Name", "desc": "New desc"},
+        )
         mock_trello.update_card.assert_called_once_with("c1", name="New Name", desc="New desc")
+        assert "updated" in result.lower()
 
     def test_create_card(self):
         mock_trello = MagicMock()
-        mock_trello.get_list_id.return_value = "list_nutrition"
+        mock_trello.get_list_id.return_value = "list_exercise"
         mock_trello.create_card.return_value = {"id": "new_card"}
-        mock_trello.create_checklist.return_value = {"id": "cl_1"}
-        coach._execute_actions(mock_trello, "t1", [
-            {
-                "action": "create_card",
-                "list": "Nutrition",
-                "title": "Grocery Run",
-                "description": "Weekly groceries",
-                "checklist": ["Chicken breast", "Rice", "Broccoli"],
-                "comment": "Stock up!",
-            },
-        ])
-        mock_trello.create_card.assert_called_once_with(
-            "list_nutrition", "Grocery Run", "Weekly groceries",
-        )
-        assert mock_trello.add_checklist_item.call_count == 3
-        mock_trello.add_comment.assert_called_once_with("new_card", "Stock up!")
+        mock_trello.create_checklist.return_value = {"id": "cl1"}
+        result = coach.execute_tool(mock_trello, "t1", "create_card", {
+            "list_name": "Exercise",
+            "title": "Leg Day",
+            "description": "Squats",
+            "checklist": ["Squat 4x8"],
+            "comment": "Go heavy!",
+        })
+        mock_trello.create_card.assert_called_once()
+        assert "new_card" in result
 
     def test_create_card_minimal(self):
         mock_trello = MagicMock()
         mock_trello.get_list_id.return_value = "list_exercise"
         mock_trello.create_card.return_value = {"id": "new_card"}
-        coach._execute_actions(mock_trello, "t1", [
-            {"action": "create_card", "list": "Exercise", "title": "Leg Day"},
-        ])
-        mock_trello.create_card.assert_called_once_with(
-            "list_exercise", "Leg Day", "",
-        )
+        result = coach.execute_tool(mock_trello, "t1", "create_card", {
+            "list_name": "Exercise",
+            "title": "Leg Day",
+        })
+        mock_trello.create_card.assert_called_once()
         mock_trello.create_checklist.assert_not_called()
         mock_trello.add_comment.assert_not_called()
 
-    def test_multiple_actions(self):
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.object(coach.anthropic, "Anthropic")
+    def test_update_spec(self, mock_cls):
         mock_trello = MagicMock()
-        mock_trello.get_list_id.return_value = "list_forum"
-        coach._execute_actions(mock_trello, "t1", [
-            {"action": "check_item", "card_id": "c1", "item_id": "i1"},
-            {"action": "archive_card", "card_id": "c2"},
-            {"action": "move_card", "card_id": "c3", "list": "Forum"},
-        ])
-        mock_trello.set_check_item_state.assert_called_once()
-        mock_trello.archive_card.assert_called_once_with("c2")
-        mock_trello.move_card.assert_called_once_with("c3", "list_forum")
+        mock_trello.get_board_desc.return_value = "# Spec"
+        mock_client = MagicMock()
+        mock_cls.return_value = mock_client
+        mock_client.messages.create.return_value = _mock_api_response("# Updated Spec")
 
-    def test_action_failure_continues(self):
+        result = coach.execute_tool(
+            mock_trello, "t1", "update_spec", {"instruction": "Add PR"},
+        )
+        assert "updated" in result.lower()
+        mock_trello.update_board_desc.assert_called_once()
+
+    def test_add_reaction(self):
+        mock_trello = MagicMock()
+        result = coach.execute_tool(
+            mock_trello, "t1", "add_reaction",
+            {"action_id": "a1", "emoji": "muscle"},
+        )
+        mock_trello.add_reaction.assert_called_once_with("a1", "muscle")
+        assert "reaction" in result.lower()
+
+    def test_tool_error_returns_string(self):
         mock_trello = MagicMock()
         mock_trello.archive_card.side_effect = Exception("API error")
-        # Should not raise — logs error and continues
-        coach._execute_actions(mock_trello, "t1", [
-            {"action": "archive_card", "card_id": "c1"},
-            {"action": "check_item", "card_id": "c2", "item_id": "i1"},
-        ])
-        # Second action still executed despite first failing
-        mock_trello.set_check_item_state.assert_called_once()
+        result = coach.execute_tool(mock_trello, "t1", "archive_card", {"card_id": "c1"})
+        assert "Error:" in result
 
-    def test_empty_actions(self):
+    def test_unknown_tool(self):
         mock_trello = MagicMock()
-        coach._execute_actions(mock_trello, "t1", [])
-        # No Trello calls made
-        mock_trello.assert_not_called()
+        result = coach.execute_tool(mock_trello, "t1", "unknown_tool", {})
+        assert "Unknown tool" in result
+
+
+class TestRunAgent:
+    """Tests for run_agent()."""
+
+    def test_single_turn_end(self):
+        """Agent that ends immediately without tools."""
+        mock_client = MagicMock()
+        mock_trello = MagicMock()
+
+        response = MagicMock()
+        response.stop_reason = "end_turn"
+        response.content = [MagicMock(type="text", text="Done")]
+        mock_client.messages.create.return_value = response
+
+        coach.run_agent(mock_client, mock_trello, "t1", "system", "user")
+        assert mock_client.messages.create.call_count == 1
+
+    def test_tool_use_then_end(self):
+        """Agent that uses a tool then ends."""
+        mock_client = MagicMock()
+        mock_trello = MagicMock()
+        mock_trello.archive_card.return_value = {}
+
+        # First response: tool_use
+        tool_block = MagicMock()
+        tool_block.type = "tool_use"
+        tool_block.id = "tu_1"
+        tool_block.name = "archive_card"
+        tool_block.input = {"card_id": "c1"}
+
+        first_response = MagicMock()
+        first_response.stop_reason = "tool_use"
+        first_response.content = [tool_block]
+
+        # Second response: end_turn
+        second_response = MagicMock()
+        second_response.stop_reason = "end_turn"
+        second_response.content = [MagicMock(type="text", text="Done")]
+
+        mock_client.messages.create.side_effect = [first_response, second_response]
+
+        coach.run_agent(mock_client, mock_trello, "t1", "system", "user")
+
+        assert mock_client.messages.create.call_count == 2
+        mock_trello.archive_card.assert_called_once_with("c1")
+
+    def test_max_iterations_cap(self):
+        """Agent that loops forever hits the 25-iteration cap."""
+        mock_client = MagicMock()
+        mock_trello = MagicMock()
+        mock_trello.archive_card.return_value = {}
+
+        tool_block = MagicMock()
+        tool_block.type = "tool_use"
+        tool_block.id = "tu_1"
+        tool_block.name = "archive_card"
+        tool_block.input = {"card_id": "c1"}
+
+        response = MagicMock()
+        response.stop_reason = "tool_use"
+        response.content = [tool_block]
+
+        mock_client.messages.create.return_value = response
+
+        coach.run_agent(mock_client, mock_trello, "t1", "system", "user")
+        assert mock_client.messages.create.call_count == 25
+
+    def test_unexpected_stop_reason(self):
+        """Agent handles unexpected stop reasons gracefully."""
+        mock_client = MagicMock()
+        mock_trello = MagicMock()
+
+        response = MagicMock()
+        response.stop_reason = "max_tokens"
+        response.content = [MagicMock(type="text", text="truncated")]
+        mock_client.messages.create.return_value = response
+
+        coach.run_agent(mock_client, mock_trello, "t1", "system", "user")
+        assert mock_client.messages.create.call_count == 1
+
+    def test_multi_step_read_then_create(self):
+        """Agent reads a card, then creates a new card, then ends."""
+        mock_client = MagicMock()
+        mock_trello = MagicMock()
+        mock_trello.get_card.return_value = {"name": "Old Card", "desc": "Details"}
+        mock_trello.get_card_checklists.return_value = []
+        mock_trello.get_card_comments.return_value = []
+        mock_trello.get_list_id.return_value = "list_exercise"
+        mock_trello.create_card.return_value = {"id": "new_card_1"}
+
+        # Turn 1: read_card
+        read_block = MagicMock()
+        read_block.type = "tool_use"
+        read_block.id = "tu_1"
+        read_block.name = "read_card"
+        read_block.input = {"card_id": "c1"}
+        resp1 = MagicMock(stop_reason="tool_use", content=[read_block])
+
+        # Turn 2: create_card
+        create_block = MagicMock()
+        create_block.type = "tool_use"
+        create_block.id = "tu_2"
+        create_block.name = "create_card"
+        create_block.input = {"list_name": "Exercise", "title": "Push Day"}
+        resp2 = MagicMock(stop_reason="tool_use", content=[create_block])
+
+        # Turn 3: done
+        resp3 = MagicMock(stop_reason="end_turn")
+        resp3.content = [MagicMock(type="text", text="All done")]
+
+        mock_client.messages.create.side_effect = [resp1, resp2, resp3]
+
+        coach.run_agent(mock_client, mock_trello, "t1", "system prompt", "user msg")
+
+        assert mock_client.messages.create.call_count == 3
+        mock_trello.get_card.assert_called_once_with("c1")
+        mock_trello.create_card.assert_called_once()
+        # Verify message threading: 3rd call should have 5 messages
+        # (user, assistant+tool_use, tool_result, assistant+tool_use, tool_result)
+        third_call_messages = mock_client.messages.create.call_args_list[2][1]["messages"]
+        assert len(third_call_messages) == 5
+        assert third_call_messages[0]["role"] == "user"
+        assert third_call_messages[1]["role"] == "assistant"
+        assert third_call_messages[2]["role"] == "user"  # tool_result
+        assert third_call_messages[3]["role"] == "assistant"
+        assert third_call_messages[4]["role"] == "user"  # tool_result
+
+    def test_parallel_tool_use(self):
+        """Agent calls two tools in one response (comment + reaction)."""
+        mock_client = MagicMock()
+        mock_trello = MagicMock()
+
+        comment_block = MagicMock()
+        comment_block.type = "tool_use"
+        comment_block.id = "tu_1"
+        comment_block.name = "comment_on_card"
+        comment_block.input = {"card_id": "c1", "text": "Nice work!"}
+        reaction_block = MagicMock()
+        reaction_block.type = "tool_use"
+        reaction_block.id = "tu_2"
+        reaction_block.name = "add_reaction"
+        reaction_block.input = {"action_id": "a1", "emoji": "muscle"}
+
+        resp1 = MagicMock(stop_reason="tool_use", content=[comment_block, reaction_block])
+        resp2 = MagicMock(stop_reason="end_turn")
+        resp2.content = [MagicMock(type="text", text="Done")]
+
+        mock_client.messages.create.side_effect = [resp1, resp2]
+
+        coach.run_agent(mock_client, mock_trello, "t1", "system", "user")
+
+        assert mock_client.messages.create.call_count == 2
+        mock_trello.add_comment.assert_called_once_with("c1", "Nice work!")
+        mock_trello.add_reaction.assert_called_once_with("a1", "muscle")
+        # Both tool results sent back in one message
+        second_call_messages = mock_client.messages.create.call_args_list[1][1]["messages"]
+        tool_result_msg = second_call_messages[2]
+        assert tool_result_msg["role"] == "user"
+        assert len(tool_result_msg["content"]) == 2
+        assert tool_result_msg["content"][0]["tool_use_id"] == "tu_1"
+        assert tool_result_msg["content"][1]["tool_use_id"] == "tu_2"
+
+    def test_tool_error_flows_back_to_llm(self):
+        """Tool failure returns error string; LLM sees it and ends."""
+        mock_client = MagicMock()
+        mock_trello = MagicMock()
+        mock_trello.archive_card.side_effect = Exception("Card not found")
+
+        tool_block = MagicMock()
+        tool_block.type = "tool_use"
+        tool_block.id = "tu_1"
+        tool_block.name = "archive_card"
+        tool_block.input = {"card_id": "bad_id"}
+        resp1 = MagicMock(stop_reason="tool_use", content=[tool_block])
+
+        resp2 = MagicMock(stop_reason="end_turn")
+        resp2.content = [MagicMock(type="text", text="That card doesn't exist")]
+
+        mock_client.messages.create.side_effect = [resp1, resp2]
+
+        coach.run_agent(mock_client, mock_trello, "t1", "system", "user")
+
+        assert mock_client.messages.create.call_count == 2
+        # Verify error string was sent back as tool_result
+        second_call_messages = mock_client.messages.create.call_args_list[1][1]["messages"]
+        tool_result_content = second_call_messages[2]["content"][0]["content"]
+        assert "Error:" in tool_result_content
+        assert "Card not found" in tool_result_content
 
 
 class TestHandleMorning:
     """Tests for handle_morning()."""
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.object(coach, "run_agent")
+    @patch.object(coach, "_get_client")
     @patch.object(coach, "TrelloClient")
-    @patch.object(coach.anthropic, "Anthropic")
-    def test_creates_exercise_and_nutrition_cards(self, mock_api_cls, mock_trello_cls):
+    def test_calls_run_agent_with_context(self, mock_trello_cls, mock_get_client, mock_run_agent):
         mock_trello = MagicMock()
         mock_trello_cls.return_value = mock_trello
         mock_trello.get_board_desc.return_value = "# Spec"
         mock_trello.get_cards.return_value = []
         mock_trello.get_lists.return_value = []
-        mock_trello.get_list_id.side_effect = lambda name: f"list_{name.lower()}"
-        mock_trello.create_card.side_effect = [
-            {"id": "exercise_card"},
-            {"id": "nutrition_card"},
-            {"id": "forum_card"},
-        ]
-        mock_trello.create_checklist.side_effect = [
-            {"id": "cl_exercise"},
-            {"id": "cl_nutrition"},
-        ]
-
-        mock_client = MagicMock()
-        mock_api_cls.return_value = mock_client
-        mock_client.messages.create.return_value = _mock_api_response(
-            json.dumps({
-                "exercise": {
-                    "title": "Monday — Push Day",
-                    "description": "## Bench\n4x8 @ 185",
-                    "checklist": ["Bench 4x8 @ 185", "Incline DB 3x10 @ 70"],
-                    "comment": "Time to push!",
-                },
-                "nutrition": {
-                    "title": "Monday — Nutrition",
-                    "description": "## Meals",
-                    "checklist": ["Meal 1: Oatmeal + whey"],
-                },
-                "forum": {
-                    "title": "Monday — Check In",
-                    "description": "",
-                    "comment": "How are you feeling today?",
-                },
-                "actions": [],
-                "spec_update_instruction": None,
-            })
-        )
 
         coach.handle_morning("trace-1")
 
-        assert mock_trello.create_card.call_count == 3
-        # Exercise card
-        mock_trello.create_card.assert_any_call(
-            "list_exercise", "Monday — Push Day", "## Bench\n4x8 @ 185",
-        )
-        # Nutrition card
-        mock_trello.create_card.assert_any_call(
-            "list_nutrition", "Monday — Nutrition", "## Meals",
-        )
-        # Forum card
-        mock_trello.create_card.assert_any_call(
-            "list_forum", "Monday — Check In", "",
-        )
-        assert mock_trello.add_checklist_item.call_count == 3  # 2 exercise + 1 nutrition
-        # Exercise comment + forum comment
-        assert mock_trello.add_comment.call_count == 2
-
-    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
-    @patch.object(coach, "TrelloClient")
-    @patch.object(coach.anthropic, "Anthropic")
-    def test_skips_null_cards(self, mock_api_cls, mock_trello_cls):
-        mock_trello = MagicMock()
-        mock_trello_cls.return_value = mock_trello
-        mock_trello.get_board_desc.return_value = "# Spec"
-        mock_trello.get_cards.return_value = []
-        mock_trello.get_lists.return_value = []
-
-        mock_client = MagicMock()
-        mock_api_cls.return_value = mock_client
-        mock_client.messages.create.return_value = _mock_api_response(
-            json.dumps({
-                "exercise": None,
-                "nutrition": {
-                    "title": "Rest Day — Nutrition",
-                    "description": "Recovery meals",
-                    "checklist": ["High protein meals"],
-                },
-                "actions": [],
-                "spec_update_instruction": None,
-            })
-        )
-
-        mock_trello.get_list_id.side_effect = lambda name: f"list_{name.lower()}"
-        mock_trello.create_card.return_value = {"id": "nutr_card"}
-        mock_trello.create_checklist.return_value = {"id": "cl_1"}
-
-        coach.handle_morning("trace-2")
-
-        # Only nutrition card created
-        mock_trello.create_card.assert_called_once()
-        mock_trello.move_card.assert_not_called()
+        mock_run_agent.assert_called_once()
+        call_args = mock_run_agent.call_args[0]
+        system_prompt = call_args[3]
+        user_message = call_args[4]
+        assert "coach" in system_prompt.lower()
+        assert "create_card" in system_prompt
+        assert "# Spec" in user_message
 
 
 class TestHandleReply:
@@ -546,39 +548,62 @@ class TestHandleReply:
         "ANTHROPIC_API_KEY": "test-key",
         "COMMENT_TEXT": "Hit 225 on squats today",
         "CARD_ID": "card_abc",
+        "ACTION_ID": "action_123",
     })
+    @patch.object(coach, "run_agent")
+    @patch.object(coach, "_get_client")
     @patch.object(coach, "TrelloClient")
-    @patch.object(coach.anthropic, "Anthropic")
-    def test_replies_to_comment(self, mock_api_cls, mock_trello_cls):
+    def test_calls_run_agent_and_reacts(self, mock_trello_cls, mock_get_client, mock_run_agent):
         mock_trello = MagicMock()
         mock_trello_cls.return_value = mock_trello
         mock_trello.get_board_desc.return_value = "# Spec"
-        mock_trello.get_lists.return_value = []
         mock_trello.get_cards.return_value = []
-        mock_trello.get_card.return_value = {"name": "Monday — Push", "desc": "Bench day"}
+        mock_trello.get_lists.return_value = []
+        mock_trello.get_card.return_value = {"name": "Leg Day", "desc": "Squats"}
         mock_trello.get_card_comments.return_value = []
-
-        mock_client = MagicMock()
-        mock_api_cls.return_value = mock_client
-        # First call: generate_reply (Opus), second call: apply_spec_update (Haiku)
-        mock_client.messages.create.side_effect = [
-            _mock_api_response(json.dumps({
-                "message": "225 is a huge PR!",
-                "actions": [{"action": "check_item", "card_id": "card_abc", "item_id": "ci1"}],
-                "spec_update_instruction": "Update squat PR to 225x5x5",
-            })),
-            _mock_api_response("# Updated\n- Squat: 225"),
-        ]
 
         coach.handle_reply("trace-3")
 
-        mock_trello.add_comment.assert_called_once_with(
-            "card_abc", "225 is a huge PR!"
-        )
-        # Check item action executed
-        mock_trello.set_check_item_state.assert_called_once_with("card_abc", "ci1", "complete")
-        # Spec updated via Haiku
-        mock_trello.update_board_desc.assert_called_once_with("# Updated\n- Squat: 225")
+        mock_run_agent.assert_called_once()
+        call_args = mock_run_agent.call_args[0]
+        system_prompt = call_args[3]
+        user_message = call_args[4]
+        assert "coach" in system_prompt.lower()
+        assert "comment_on_card" in system_prompt
+        assert "card_abc" in system_prompt
+        assert "add_reaction" in system_prompt
+        assert "action_123" in system_prompt
+        assert "Hit 225" in user_message
+        assert "card_abc" in user_message
+        # Checkmark reaction added after agent completes
+        mock_trello.add_reaction.assert_called_once_with("action_123", "white_check_mark")
+
+    @patch.dict("os.environ", {
+        "ANTHROPIC_API_KEY": "test-key",
+        "COMMENT_TEXT": "Hello",
+        "CARD_ID": "card_abc",
+        "ACTION_ID": "",
+    })
+    @patch.object(coach, "run_agent")
+    @patch.object(coach, "_get_client")
+    @patch.object(coach, "TrelloClient")
+    def test_skips_reaction_without_action_id(self, mock_trello_cls, mock_get_client, mock_run_agent):
+        mock_trello = MagicMock()
+        mock_trello_cls.return_value = mock_trello
+        mock_trello.get_board_desc.return_value = "# Spec"
+        mock_trello.get_cards.return_value = []
+        mock_trello.get_lists.return_value = []
+        mock_trello.get_card.return_value = {"name": "Forum", "desc": ""}
+        mock_trello.get_card_comments.return_value = []
+
+        coach.handle_reply("trace-5")
+
+        mock_run_agent.assert_called_once()
+        # No add_reaction instruction in system prompt
+        system_prompt = mock_run_agent.call_args[0][3]
+        assert "add_reaction" not in system_prompt
+        # No reaction call
+        mock_trello.add_reaction.assert_not_called()
 
     @patch.dict("os.environ", {"COMMENT_TEXT": "", "CARD_ID": ""})
     def test_skips_empty_comment(self):
