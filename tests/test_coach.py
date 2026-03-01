@@ -89,6 +89,21 @@ class TestReadMemories:
         result = coach.read_memories(mock_trello)
         assert result == ""
 
+    def test_long_descriptions_not_truncated(self):
+        """Verify that memory card descriptions longer than 500 chars are not truncated."""
+        mock_trello = MagicMock()
+        long_desc = "B" * 700  # 700 character description
+        mock_trello.get_lists.return_value = [
+            {"id": "mem_list", "name": "Memories"},
+        ]
+        mock_trello.get_cards.return_value = [
+            {"id": "m1", "name": "Long Memory", "desc": long_desc, "idList": "mem_list"},
+        ]
+        mock_trello.get_card_comments.return_value = []
+
+        result = coach.read_memories(mock_trello)
+        assert long_desc in result
+
 
 class TestReadCardContext:
     """Tests for read_card_context()."""
@@ -109,6 +124,19 @@ class TestReadCardContext:
         assert "Tuesday Pull" in result
         assert "Client:" in result
         assert "Feeling sore" in result
+
+    def test_long_descriptions_not_truncated(self):
+        """Verify that card descriptions longer than 500 chars are not truncated."""
+        mock_trello = MagicMock()
+        long_desc = "A" * 600  # 600 character description
+        mock_trello.get_card.return_value = {
+            "name": "Long Card", "desc": long_desc,
+        }
+        mock_trello.get_card_comments.return_value = []
+
+        result = coach.read_card_context(mock_trello, "card1")
+        assert long_desc in result
+        assert len(result) > 600
 
 
 class TestBuildBoardSummary:
@@ -215,6 +243,17 @@ class TestExecuteTool:
         assert "[ ] Incline 3x10" in result
         assert "item_id: i1" in result
         assert "Done!" in result
+
+    def test_read_card_long_description_not_truncated(self):
+        """Verify that long card descriptions in read_card tool are not truncated."""
+        mock_trello = MagicMock()
+        long_desc = "C" * 800  # 800 character description
+        mock_trello.get_card.return_value = {"name": "Long Card", "desc": long_desc}
+        mock_trello.get_card_checklists.return_value = []
+        mock_trello.get_card_comments.return_value = []
+
+        result = coach.execute_tool(mock_trello, "t1", "read_card", {"card_id": "c1"})
+        assert long_desc in result
 
     def test_archive_card(self):
         mock_trello = MagicMock()

@@ -272,7 +272,7 @@ def read_memories(trello):
     for card in memory_cards:
         lines.append(f"### {card['name']}  (card_id: {card['id']})")
         if card.get("desc"):
-            lines.append(card["desc"][:500])
+            lines.append(card["desc"])
         comments = trello.get_card_comments(card["id"])
         for comment in comments:
             ts = _utc_to_ct(comment.get("date", ""))
@@ -294,7 +294,7 @@ def read_card_context(trello, card_id):
 
     lines = [f"### Card: {card['name']}"]
     if card.get("desc"):
-        lines.append(card["desc"][:500])
+        lines.append(card["desc"])
     lines.append("")
 
     for comment in comments:
@@ -618,7 +618,7 @@ def execute_tool(trello, trace_id, tool_name, tool_input):
             card = trello.get_card(card_id)
             lines = [f"### Card: {card['name']}"]
             if card.get("desc"):
-                lines.append(card["desc"][:500])
+                lines.append(card["desc"])
             try:
                 checklists = trello.get_card_checklists(card_id)
                 for cl in checklists:
