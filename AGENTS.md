@@ -239,6 +239,8 @@ The coach can take these actions on the board:
 - `comment` — comment on any card
 - `update_card` — update card name/description
 - `create_card` — create new cards on any list (with optional description, checklist, comment)
+- `get_sleep_data` — fetch Oura Ring sleep score, readiness score, and contributor breakdowns for a date
+- `get_calorie_data` — fetch Oura Ring total calories, active calories, and steps for a date
 
 ### Cloud Functions
 
@@ -258,6 +260,7 @@ Cloud Run (coach):
 - `TRELLO_API_KEY` — Trello authentication (secret)
 - `TRELLO_TOKEN` — Trello authentication (secret)
 - `TRELLO_COACH_BOARD_ID` — Coach-specific Trello board
+- `OURA_ACCESS_TOKEN` — Oura Ring API personal access token (secret)
 - `COACH_MODE` — "morning" or "reply" (set via container override)
 - `COMMENT_TEXT` — User's comment text (reply mode only)
 - `CARD_ID` — Card the comment was on (reply mode only)
@@ -396,6 +399,7 @@ Sync an env var from `.env` to GCP Secret Manager:
 | `SLACK_SIGNING_SECRET` | `slack-signing-secret` |
 | `TRELLO_API_KEY` | `trello-api-key` |
 | `TRELLO_TOKEN` | `trello-token` |
+| `OURA_ACCESS_TOKEN` | `oura-access-token` |
 
 ## OAuth Token
 

@@ -375,7 +375,7 @@ deploy-coach:
 		--max-retries=0 \
 		--service-account="$$SERVICE_ACCOUNT" \
 		--set-env-vars="TRELLO_COACH_BOARD_ID=IrsYdZHV" \
-		--set-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest,TRELLO_API_KEY=trello-api-key:latest,TRELLO_TOKEN=trello-token:latest" \
+		--set-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest,TRELLO_API_KEY=trello-api-key:latest,TRELLO_TOKEN=trello-token:latest,OURA_ACCESS_TOKEN=oura-access-token:latest" \
 		--project=$(PROJECT_ID) && \
 	echo "✓ coach job deployed!"
 

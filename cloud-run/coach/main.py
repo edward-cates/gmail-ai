@@ -607,7 +607,173 @@ COACH_TOOLS = [
             "required": ["action_id", "emoji"],
         },
     },
+    {
+        "name": "get_sleep_data",
+        "description": (
+            "Get the client's Oura Ring sleep and recovery data for a date or date range. "
+            "Returns sleep score (with contributors: deep sleep, efficiency, latency, "
+            "REM, restfulness, timing, total sleep) and readiness score (with contributors: "
+            "activity balance, body temperature, HRV balance, previous night, recovery index, "
+            "resting heart rate, sleep balance, sleep regularity) for each day. "
+            "Use to check recovery status before programming workouts or when discussing "
+            "sleep quality. Can fetch a range (e.g. past week) to spot trends."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date (YYYY-MM-DD). Defaults to today.",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "End date (YYYY-MM-DD). Defaults to start_date.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_calorie_data",
+        "description": (
+            "Get the client's Oura Ring calorie burn data for a date or date range. "
+            "Returns total calories (active + basal metabolic), active calories, "
+            "and steps for each day. Use to inform nutrition recommendations "
+            "and ensure the client is eating enough for muscle growth."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date (YYYY-MM-DD). Defaults to today.",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "End date (YYYY-MM-DD). Defaults to start_date.",
+                },
+            },
+            "required": [],
+        },
+    },
 ]
+
+OURA_API_BASE = "https://api.ouraring.com/v2/usercollection"
+
+
+def _fetch_oura(trace_id, data_type, start_date, end_date):
+    """Fetch a single Oura API endpoint. Returns parsed JSON data list or None on failure."""
+    token = os.getenv("OURA_ACCESS_TOKEN")
+    if not token:
+        return None
+    try:
+        r = requests.get(
+            f"{OURA_API_BASE}/{data_type}",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"start_date": start_date, "end_date": end_date},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return r.json().get("data", [])
+    except Exception as e:
+        logger.warning(f"[{trace_id}] Oura {data_type} fetch failed: {e}")
+        return None
+
+
+def _format_oura_day(day_str, sleep_entry, readiness_entry):
+    """Format a single day's sleep + readiness data."""
+    lines = [f"\n{day_str}"]
+    if sleep_entry:
+        lines.append(f"  Sleep Score: {sleep_entry.get('score', 'N/A')}/100")
+        contributors = sleep_entry.get("contributors")
+        if isinstance(contributors, dict) and contributors:
+            parts = [f"{k.replace('_', ' ').title()}: {v}" for k, v in contributors.items()]
+            lines.append(f"    Contributors: {', '.join(parts)}")
+    else:
+        lines.append("  Sleep: no data")
+    if readiness_entry:
+        lines.append(f"  Readiness Score: {readiness_entry.get('score', 'N/A')}/100")
+        contributors = readiness_entry.get("contributors")
+        if isinstance(contributors, dict) and contributors:
+            parts = [f"{k.replace('_', ' ').title()}: {v}" for k, v in contributors.items()]
+            lines.append(f"    Contributors: {', '.join(parts)}")
+    else:
+        lines.append("  Readiness: no data")
+    return "\n".join(lines)
+
+
+def _format_oura_data(trace_id, start_date, end_date):
+    """Fetch and format Oura sleep + readiness data into a readable string."""
+    token = os.getenv("OURA_ACCESS_TOKEN")
+    if not token:
+        return "Oura Ring is not configured (no access token)."
+
+    try:
+        sleep_data = _fetch_oura(trace_id, "daily_sleep", start_date, end_date)
+        readiness_data = _fetch_oura(trace_id, "daily_readiness", start_date, end_date)
+
+        if sleep_data is None and readiness_data is None:
+            return f"Failed to fetch Oura data for {start_date} to {end_date}."
+
+        sleep_by_day = {e["day"]: e for e in (sleep_data or [])}
+        readiness_by_day = {e["day"]: e for e in (readiness_data or [])}
+        all_days = sorted(set(sleep_by_day) | set(readiness_by_day))
+
+        if not all_days:
+            return f"No Oura data available for {start_date} to {end_date}."
+
+        header = f"Oura Ring Data for {start_date}" if start_date == end_date else (
+            f"Oura Ring Data for {start_date} to {end_date}"
+        )
+        lines = [header]
+        for day in all_days:
+            lines.append(_format_oura_day(day, sleep_by_day.get(day), readiness_by_day.get(day)))
+    except Exception as e:
+        logger.warning(f"[{trace_id}] Oura data formatting failed: {e}")
+        return f"Failed to process Oura data for {start_date} to {end_date}."
+
+    log_structured(trace_id, "oura_fetch", metadata={
+        "start_date": start_date, "end_date": end_date, "days": len(all_days),
+    })
+    return "\n".join(lines)
+
+
+def _format_calorie_data(trace_id, start_date, end_date):
+    """Fetch and format Oura daily activity calorie data into a readable string."""
+    token = os.getenv("OURA_ACCESS_TOKEN")
+    if not token:
+        return "Oura Ring is not configured (no access token)."
+
+    try:
+        activity_data = _fetch_oura(trace_id, "daily_activity", start_date, end_date)
+
+        if activity_data is None:
+            return f"Failed to fetch calorie data for {start_date} to {end_date}."
+
+        if not activity_data:
+            return f"No calorie data available for {start_date} to {end_date}."
+
+        header = f"Calorie Burn Data for {start_date}" if start_date == end_date else (
+            f"Calorie Burn Data for {start_date} to {end_date}"
+        )
+        lines = [header]
+        for entry in sorted(activity_data, key=lambda e: e.get("day", "")):
+            day = entry.get("day", "unknown")
+            total = entry.get("total_calories", "N/A")
+            active = entry.get("active_calories", "N/A")
+            steps = entry.get("steps", "N/A")
+            lines.append(f"\n{day}")
+            lines.append(f"  Total Calories: {total}")
+            lines.append(f"  Active Calories: {active}")
+            lines.append(f"  Steps: {steps}")
+    except Exception as e:
+        logger.warning(f"[{trace_id}] Calorie data formatting failed: {e}")
+        return f"Failed to process calorie data for {start_date} to {end_date}."
+
+    log_structured(trace_id, "oura_calorie_fetch", metadata={
+        "start_date": start_date, "end_date": end_date, "days": len(activity_data),
+    })
+    return "\n".join(lines)
 
 
 def execute_tool(trello, trace_id, tool_name, tool_input):
@@ -716,6 +882,18 @@ def execute_tool(trello, trace_id, tool_name, tool_input):
             })
             return "Reaction added."
 
+        elif tool_name == "get_sleep_data":
+            today = datetime.now(tz=CT).strftime("%Y-%m-%d")
+            start = tool_input.get("start_date") or today
+            end = tool_input.get("end_date") or start
+            return _format_oura_data(trace_id, start, end)
+
+        elif tool_name == "get_calorie_data":
+            today = datetime.now(tz=CT).strftime("%Y-%m-%d")
+            start = tool_input.get("start_date") or today
+            end = tool_input.get("end_date") or start
+            return _format_calorie_data(trace_id, start, end)
+
         else:
             return f"Unknown tool: {tool_name}"
 
@@ -821,6 +999,8 @@ Today is {day_of_week}, {date_str}. Current time: {time_str} Central.
 - If the spec is empty, introduce yourself and ask what they're working on
 - On rest days, skip the exercise card but still provide nutrition and forum
 - The forum card is a daily check-in — open-ended prompt for the client
+- Use get_sleep_data to check last night's sleep and readiness before programming today's workout
+- Use get_calorie_data to check recent calorie expenditure when planning nutrition
 
 ## Two-Tier Memory System
 **Spec** (board description) — your working document:
@@ -921,6 +1101,8 @@ Today is {day_of_week}. Current time: {time_str} Central.
 - If they share a concern (injury, plateau, motivation), address it with empathy and a plan
 - Use read_card to inspect other cards if you need more context
 - Use create_card when the client asks for a new workout plan, meal plan, grocery list, etc.
+- Use get_sleep_data if the client asks about sleep or recovery
+- Use get_calorie_data if the client asks about calories or energy expenditure
 
 ## Two-Tier Memory System
 **Spec** (board description) — your working document:
