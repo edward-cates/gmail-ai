@@ -1,4 +1,4 @@
-.PHONY: help run-dashboard check-logs check-job-logs check-function-logs deploy-function deploy-function-force deploy-watch-renewal deploy-email-processor deploy-unsubscribe-service deploy-slack-processor deploy-slack-function deploy-slack-batch-trigger deploy-sms-coach deploy-sms-function deploy-sms-morning-trigger setup-sms-scheduler deploy-coach deploy-coach-webhook deploy-coach-morning-trigger setup-coach-scheduler test-email-processor test-unsubscribe-service test-slack-processor test-sms-coach test-coach test-functions test-dashboard test-unit test setup-scheduler setup-slack-scheduler watch-build lint validate delete-trello-cards check-sms-logs check-sms-function-logs check-coach-logs check-coach-function-logs
+.PHONY: help run-dashboard check-logs check-job-logs check-function-logs deploy-function deploy-function-force deploy-watch-renewal deploy-email-processor deploy-unsubscribe-service deploy-slack-processor deploy-slack-function deploy-slack-batch-trigger deploy-sms-coach deploy-sms-function deploy-sms-morning-trigger setup-sms-scheduler deploy-coach deploy-coach-webhook deploy-coach-morning-trigger setup-coach-scheduler deploy-archive-summaries setup-archive-scheduler test-email-processor test-unsubscribe-service test-slack-processor test-sms-coach test-coach test-functions test-dashboard test-unit test setup-scheduler setup-slack-scheduler watch-build lint validate delete-trello-cards check-sms-logs check-sms-function-logs check-coach-logs check-coach-function-logs
 
 PROJECT_ID = neat-simplicity-486023-a4
 PROJECT_NUMBER = 543519381062
@@ -415,7 +415,7 @@ deploy-coach-morning-trigger:
 		--set-env-vars="GMAIL_AI_PROJECT_ID=$(PROJECT_ID),GMAIL_AI_LOCATION=$(REGION),COACH_JOB_NAME=coach"
 
 setup-coach-scheduler:
-	@echo "Setting up coach morning scheduler (7:00 AM Central daily)..."
+	@echo "Setting up coach morning scheduler (8:00 AM Central daily)..."
 	@FUNCTION_URL=$$(gcloud functions describe coach-morning-trigger --gen2 --region=$(REGION) --project=$(PROJECT_ID) --format="value(serviceConfig.uri)" 2>/dev/null); \
 	if [ -z "$$FUNCTION_URL" ]; then \
 		echo "Error: deploy-coach-morning-trigger first"; exit 1; \
@@ -423,9 +423,9 @@ setup-coach-scheduler:
 	JOB_EXISTS=$$(gcloud scheduler jobs describe coach-morning --location=$(REGION) --project=$(PROJECT_ID) --format="value(name)" 2>/dev/null | wc -l); \
 	if [ "$$JOB_EXISTS" -eq 0 ]; then \
 		gcloud scheduler jobs create http coach-morning \
-			--location=$(REGION) --schedule="0 7 * * *" --uri="$$FUNCTION_URL" \
+			--location=$(REGION) --schedule="0 8 * * *" --uri="$$FUNCTION_URL" \
 			--http-method=GET --time-zone="America/Chicago" --project=$(PROJECT_ID); \
-		echo "✓ Coach morning scheduler created (7 AM Central daily)"; \
+		echo "✓ Coach morning scheduler created (8 AM Central daily)"; \
 	else \
 		echo "✓ Coach morning scheduler already exists"; \
 	fi
@@ -444,6 +444,40 @@ setup-slack-scheduler:
 		echo "✓ Slack batch scheduler created (every 5 min)"; \
 	else \
 		echo "✓ Slack batch scheduler already exists"; \
+	fi
+
+# ============================================================================
+# DEPLOY CLOUD FUNCTION (archive summaries)
+# ============================================================================
+
+deploy-archive-summaries:
+	@echo "Deploying archive-summaries Cloud Function..."
+	@gcloud functions deploy archive-summaries \
+		--gen2 \
+		--runtime=python312 \
+		--region=$(REGION) \
+		--source=. \
+		--entry-point=archive_summaries_http \
+		--trigger-http \
+		--timeout=60s \
+		--memory=256Mi \
+		--project=$(PROJECT_ID) \
+		--set-env-vars="GMAIL_AI_PROJECT_ID=$(PROJECT_ID)"
+
+setup-archive-scheduler:
+	@echo "Setting up archive-summaries scheduler (every 6 hours)..."
+	@FUNCTION_URL=$$(gcloud functions describe archive-summaries --gen2 --region=$(REGION) --project=$(PROJECT_ID) --format="value(serviceConfig.uri)" 2>/dev/null); \
+	if [ -z "$$FUNCTION_URL" ]; then \
+		echo "Error: deploy-archive-summaries first"; exit 1; \
+	fi; \
+	JOB_EXISTS=$$(gcloud scheduler jobs describe archive-summaries --location=$(REGION) --project=$(PROJECT_ID) --format="value(name)" 2>/dev/null | wc -l); \
+	if [ "$$JOB_EXISTS" -eq 0 ]; then \
+		gcloud scheduler jobs create http archive-summaries \
+			--location=$(REGION) --schedule="0 */6 * * *" --uri="$$FUNCTION_URL" \
+			--http-method=GET --time-zone="America/Chicago" --project=$(PROJECT_ID); \
+		echo "✓ Archive summaries scheduler created (every 6 hours)"; \
+	else \
+		echo "✓ Archive summaries scheduler already exists"; \
 	fi
 
 # ============================================================================
@@ -522,7 +556,7 @@ delete-trello-cards:
 # DEPLOY ALL
 # ============================================================================
 
-deploy: deploy-email-processor deploy-slack-processor deploy-sms-coach deploy-coach deploy-function deploy-slack-function deploy-slack-batch-trigger deploy-sms-function deploy-sms-morning-trigger deploy-coach-webhook deploy-coach-morning-trigger deploy-watch-renewal setup-scheduler setup-slack-scheduler setup-sms-scheduler setup-coach-scheduler
+deploy: deploy-email-processor deploy-slack-processor deploy-sms-coach deploy-coach deploy-function deploy-slack-function deploy-slack-batch-trigger deploy-sms-function deploy-sms-morning-trigger deploy-coach-webhook deploy-coach-morning-trigger deploy-archive-summaries deploy-watch-renewal setup-scheduler setup-slack-scheduler setup-sms-scheduler setup-coach-scheduler setup-archive-scheduler
 	@echo ""
 	@echo "✓ All deployed!"
 	@echo "Check logs: make check-logs"

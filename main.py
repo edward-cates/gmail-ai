@@ -9,8 +9,10 @@ Entry point for Google Cloud Functions:
 - trigger_sms_morning_http: Triggered by Cloud Scheduler (daily 7 AM CT)
 - handle_coach_webhook: Triggered by Trello webhook (card comments)
 - trigger_coach_morning_http: Triggered by Cloud Scheduler (daily 7 AM CT)
+- archive_summaries_http: Triggered by Cloud Scheduler (every 6 hours)
 """
 
+from functions.archive_summaries import archive_summaries
 from functions.coach_handler import handle_trello_webhook, trigger_coach_morning
 from functions.pubsub_handler import handle_pubsub
 from functions.slack_handler import handle_slack, trigger_slack_batch
@@ -95,4 +97,11 @@ def trigger_coach_morning_http(request):
     if isinstance(result, tuple):
         body, status = result
         return jsonify(body), status
+    return jsonify(result)
+
+
+def archive_summaries_http(request):
+    """Cloud Function entry point for auto-archiving old newsletter summaries."""
+    from flask import jsonify
+    result = archive_summaries(request)
     return jsonify(result)
