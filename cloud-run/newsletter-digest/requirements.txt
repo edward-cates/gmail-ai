@@ -1,0 +1,16 @@
+# Newsletter Digest - Cloud Run Job
+# Batch newsletters into a morning digest email
+
+# LLM for digest generation
+langchain-anthropic>=0.3.0
+
+# Gmail API
+google-api-python-client>=2.0.0
+google-auth>=2.0.0
+google-auth-oauthlib>=1.0.0
+
+# Cloud Storage (for OAuth token)
+google-cloud-storage>=2.0.0
+
+# HTML parsing for newsletters
+beautifulsoup4>=4.12.0

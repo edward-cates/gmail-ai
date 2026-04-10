@@ -9,11 +9,13 @@ Entry point for Google Cloud Functions:
 - trigger_sms_morning_http: Triggered by Cloud Scheduler (daily 7 AM CT)
 - handle_coach_webhook: Triggered by Trello webhook (card comments)
 - trigger_coach_morning_http: Triggered by Cloud Scheduler (daily 7 AM CT)
+- trigger_newsletter_digest_http: Triggered by Cloud Scheduler (daily 7 AM CT)
 - archive_summaries_http: Triggered by Cloud Scheduler (every 6 hours)
 """
 
 from functions.archive_summaries import archive_summaries
 from functions.coach_handler import handle_trello_webhook, trigger_coach_morning
+from functions.newsletter_digest_handler import trigger_newsletter_digest
 from functions.pubsub_handler import handle_pubsub
 from functions.slack_handler import handle_slack, trigger_slack_batch
 from functions.sms_handler import handle_sms, trigger_sms_morning
@@ -94,6 +96,16 @@ def trigger_coach_morning_http(request):
     """Cloud Function entry point for daily morning coach (Cloud Scheduler)."""
     from flask import jsonify
     result = trigger_coach_morning(request)
+    if isinstance(result, tuple):
+        body, status = result
+        return jsonify(body), status
+    return jsonify(result)
+
+
+def trigger_newsletter_digest_http(request):
+    """Cloud Function entry point for daily morning newsletter digest (Cloud Scheduler)."""
+    from flask import jsonify
+    result = trigger_newsletter_digest(request)
     if isinstance(result, tuple):
         body, status = result
         return jsonify(body), status

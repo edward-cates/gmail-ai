@@ -355,44 +355,59 @@ def main():
             logger.error(f"Failed to apply label/archive: {e}")
             log_structured(trace_id, email_id, "action", "failure", {"error": str(e)})
     elif category == "newsletter":
-        # Summarize, email summary, label and archive original
-        try:
-            # Get user's email address
-            profile = service.users().getProfile(userId="me").execute()
-            user_email = profile["emailAddress"]
+        # Axios gets immediate 1:1 summary; all others batch into morning digest
+        is_axios = "@axios.com" in sender.lower()
 
-            # Summarize the newsletter
-            summary = summarize_newsletter(subject, sender, body)
-            log_structured(
-                trace_id, email_id, "summarize", "success", {"summary_length": len(summary)}
-            )
+        if is_axios:
+            # Summarize, email summary, label and archive original
+            try:
+                profile = service.users().getProfile(userId="me").execute()
+                user_email = profile["emailAddress"]
 
-            # Send summary email (subject starts with 🤖 to skip processing)
-            summary_subject = f"🤖 {subject}"
-            gmail_link = f"https://mail.google.com/mail/u/0/#all/{thread_id}"
-            summary_body = (
-                f"Summary of newsletter from {sender}:\n\n"
-                f"{summary}\n\n"
-                f"---\n"
-                f"Original subject: {subject}\n"
-                f"View original: {gmail_link}"
-            )
-            sent_id = send_email(service, user_email, summary_subject, summary_body)
-            log_structured(trace_id, email_id, "send_summary", "success", {"sent_id": sent_id})
+                summary = summarize_newsletter(subject, sender, body)
+                log_structured(
+                    trace_id, email_id, "summarize", "success", {"summary_length": len(summary)}
+                )
 
-            # Label and archive original
-            apply_label(service, email_id, category, archive=True)
-            log_structured(
-                trace_id,
-                email_id,
-                "action",
-                "success",
-                {"action": "summarize_and_archive", "label": category},
-            )
-            logger.info(f"Summarized, emailed, and archived newsletter {email_id}")
-        except Exception as e:
-            logger.error(f"Failed to process newsletter: {e}")
-            log_structured(trace_id, email_id, "action", "failure", {"error": str(e)})
+                summary_subject = f"🤖 {subject}"
+                gmail_link = f"https://mail.google.com/mail/u/0/#all/{thread_id}"
+                summary_body = (
+                    f"Summary of newsletter from {sender}:\n\n"
+                    f"{summary}\n\n"
+                    f"---\n"
+                    f"Original subject: {subject}\n"
+                    f"View original: {gmail_link}"
+                )
+                sent_id = send_email(service, user_email, summary_subject, summary_body)
+                log_structured(trace_id, email_id, "send_summary", "success", {"sent_id": sent_id})
+
+                apply_label(service, email_id, category, archive=True)
+                log_structured(
+                    trace_id,
+                    email_id,
+                    "action",
+                    "success",
+                    {"action": "summarize_and_archive", "label": category},
+                )
+                logger.info(f"Summarized, emailed, and archived newsletter {email_id}")
+            except Exception as e:
+                logger.error(f"Failed to process newsletter: {e}")
+                log_structured(trace_id, email_id, "action", "failure", {"error": str(e)})
+        else:
+            # Queue for morning digest: label newsletter-pending + archive
+            try:
+                apply_label(service, email_id, "newsletter-pending", archive=True)
+                log_structured(
+                    trace_id,
+                    email_id,
+                    "action",
+                    "success",
+                    {"action": "queue_for_digest", "label": "newsletter-pending"},
+                )
+                logger.info(f"Queued newsletter for morning digest: {email_id}")
+            except Exception as e:
+                logger.error(f"Failed to queue newsletter for digest: {e}")
+                log_structured(trace_id, email_id, "action", "failure", {"error": str(e)})
 
     logger.info(f"Done processing {email_id}")
 

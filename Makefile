@@ -1,4 +1,4 @@
-.PHONY: help run-dashboard check-logs check-job-logs check-function-logs deploy-function deploy-function-force deploy-watch-renewal deploy-email-processor deploy-unsubscribe-service deploy-slack-processor deploy-slack-function deploy-slack-batch-trigger deploy-sms-coach deploy-sms-function deploy-sms-morning-trigger setup-sms-scheduler deploy-coach deploy-coach-webhook deploy-coach-morning-trigger setup-coach-scheduler deploy-archive-summaries setup-archive-scheduler test-email-processor test-unsubscribe-service test-slack-processor test-sms-coach test-coach test-functions test-dashboard test-unit test setup-scheduler setup-slack-scheduler watch-build lint validate delete-trello-cards check-sms-logs check-sms-function-logs check-coach-logs check-coach-function-logs
+.PHONY: help run-dashboard check-logs check-job-logs check-function-logs deploy-function deploy-function-force deploy-watch-renewal deploy-email-processor deploy-unsubscribe-service deploy-slack-processor deploy-slack-function deploy-slack-batch-trigger deploy-sms-coach deploy-sms-function deploy-sms-morning-trigger setup-sms-scheduler deploy-coach deploy-coach-webhook deploy-coach-morning-trigger setup-coach-scheduler deploy-archive-summaries setup-archive-scheduler deploy-newsletter-digest deploy-newsletter-digest-trigger setup-newsletter-digest-scheduler check-newsletter-digest-logs test-email-processor test-unsubscribe-service test-slack-processor test-sms-coach test-coach test-newsletter-digest test-functions test-dashboard test-unit test setup-scheduler setup-slack-scheduler watch-build lint validate delete-trello-cards check-sms-logs check-sms-function-logs check-coach-logs check-coach-function-logs
 
 PROJECT_ID = neat-simplicity-486023-a4
 PROJECT_NUMBER = 543519381062
@@ -63,6 +63,10 @@ test-coach:
 	@echo "Testing coach syntax..."
 	@uv run python -m py_compile cloud-run/coach/main.py && echo "✓ coach syntax OK"
 
+test-newsletter-digest:
+	@echo "Testing newsletter-digest syntax..."
+	@uv run python -m py_compile cloud-run/newsletter-digest/main.py && echo "✓ newsletter-digest syntax OK"
+
 test-dashboard:
 	@echo "Testing dashboard imports..."
 	@uv run python -c "from dashboard.app import app; print('✓ dashboard imports OK')"
@@ -71,7 +75,7 @@ test-unit:
 	@echo "Running unit tests..."
 	@uv run pytest tests/ -q
 
-test: test-functions test-email-processor test-unsubscribe-service test-slack-processor test-sms-coach test-coach test-dashboard test-unit
+test: test-functions test-email-processor test-unsubscribe-service test-slack-processor test-sms-coach test-coach test-newsletter-digest test-dashboard test-unit
 	@echo ""
 	@echo "✓ All tests passed!"
 
@@ -462,7 +466,7 @@ deploy-archive-summaries:
 		--timeout=60s \
 		--memory=256Mi \
 		--project=$(PROJECT_ID) \
-		--set-env-vars="GMAIL_AI_PROJECT_ID=$(PROJECT_ID)"
+		--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=$(PROJECT_ID)"
 
 setup-archive-scheduler:
 	@echo "Setting up archive-summaries scheduler (every 6 hours)..."
@@ -479,6 +483,65 @@ setup-archive-scheduler:
 	else \
 		echo "✓ Archive summaries scheduler already exists"; \
 	fi
+
+# ============================================================================
+# DEPLOY CLOUD RUN JOB (newsletter-digest)
+# ============================================================================
+
+deploy-newsletter-digest:
+	@echo "Deploying newsletter-digest job..."
+	@SERVICE_ACCOUNT=$$(gcloud iam service-accounts list --project=$(PROJECT_ID) --filter="email:*-compute@developer.gserviceaccount.com" --format="value(email)" | head -1) && \
+	gcloud run jobs deploy newsletter-digest \
+		--source=cloud-run/newsletter-digest \
+		--region=$(REGION) \
+		--task-timeout=300s \
+		--memory=512Mi \
+		--cpu=1 \
+		--max-retries=1 \
+		--service-account="$$SERVICE_ACCOUNT" \
+		--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=$(PROJECT_ID)" \
+		--set-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest" \
+		--project=$(PROJECT_ID) && \
+	echo "✓ newsletter-digest job deployed!"
+
+deploy-newsletter-digest-trigger:
+	@echo "Deploying newsletter digest trigger Cloud Function..."
+	@gcloud functions deploy newsletter-digest-trigger \
+		--gen2 \
+		--runtime=python312 \
+		--region=$(REGION) \
+		--source=. \
+		--entry-point=trigger_newsletter_digest_http \
+		--trigger-http \
+		--timeout=60s \
+		--memory=256Mi \
+		--project=$(PROJECT_ID) \
+		--set-env-vars="GMAIL_AI_PROJECT_ID=$(PROJECT_ID),GMAIL_AI_LOCATION=$(REGION),NEWSLETTER_DIGEST_JOB_NAME=newsletter-digest"
+
+setup-newsletter-digest-scheduler:
+	@echo "Setting up newsletter digest scheduler (7:00 AM Central daily)..."
+	@FUNCTION_URL=$$(gcloud functions describe newsletter-digest-trigger --gen2 --region=$(REGION) --project=$(PROJECT_ID) --format="value(serviceConfig.uri)" 2>/dev/null); \
+	if [ -z "$$FUNCTION_URL" ]; then \
+		echo "Error: deploy-newsletter-digest-trigger first"; exit 1; \
+	fi; \
+	JOB_EXISTS=$$(gcloud scheduler jobs describe newsletter-morning-digest --location=$(REGION) --project=$(PROJECT_ID) --format="value(name)" 2>/dev/null | wc -l); \
+	if [ "$$JOB_EXISTS" -eq 0 ]; then \
+		gcloud scheduler jobs create http newsletter-morning-digest \
+			--location=$(REGION) --schedule="0 7 * * *" --uri="$$FUNCTION_URL" \
+			--http-method=GET --time-zone="America/Chicago" --project=$(PROJECT_ID); \
+		echo "✓ Newsletter digest scheduler created (7 AM Central daily)"; \
+	else \
+		echo "✓ Newsletter digest scheduler already exists"; \
+	fi
+
+check-newsletter-digest-logs:
+	@echo "Checking newsletter-digest Cloud Run Job logs..."
+	@gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=newsletter-digest" \
+		--limit=30 \
+		--project=$(PROJECT_ID) \
+		--format="table(timestamp,textPayload)" \
+		--freshness=30m \
+		2>&1 | head -50
 
 # ============================================================================
 # DEPLOY CLOUD RUN JOB (unsubscribe - heavy)
@@ -556,7 +619,7 @@ delete-trello-cards:
 # DEPLOY ALL
 # ============================================================================
 
-deploy: deploy-email-processor deploy-slack-processor deploy-sms-coach deploy-coach deploy-function deploy-slack-function deploy-slack-batch-trigger deploy-sms-function deploy-sms-morning-trigger deploy-coach-webhook deploy-coach-morning-trigger deploy-archive-summaries deploy-watch-renewal setup-scheduler setup-slack-scheduler setup-sms-scheduler setup-coach-scheduler setup-archive-scheduler
+deploy: deploy-email-processor deploy-slack-processor deploy-sms-coach deploy-coach deploy-newsletter-digest deploy-function deploy-slack-function deploy-slack-batch-trigger deploy-sms-function deploy-sms-morning-trigger deploy-coach-webhook deploy-coach-morning-trigger deploy-newsletter-digest-trigger deploy-archive-summaries deploy-watch-renewal setup-scheduler setup-slack-scheduler setup-sms-scheduler setup-coach-scheduler setup-newsletter-digest-scheduler setup-archive-scheduler
 	@echo ""
 	@echo "✓ All deployed!"
 	@echo "Check logs: make check-logs"
