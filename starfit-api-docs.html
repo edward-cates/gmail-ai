@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StarFit / Fitdays API Documentation</title>
+<style>
+  :root { --bg: #0d1117; --card: #161b22; --border: #30363d; --text: #c9d1d9; --heading: #f0f6fc; --accent: #58a6ff; --green: #3fb950; --orange: #d29922; --red: #f85149; --code-bg: #1c2128; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; padding: 2rem; max-width: 960px; margin: 0 auto; }
+  h1 { color: var(--heading); margin-bottom: 0.5rem; font-size: 2rem; }
+  h2 { color: var(--heading); margin: 2rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  h3 { color: var(--accent); margin: 1.5rem 0 0.5rem; }
+  .subtitle { color: var(--text); opacity: 0.7; margin-bottom: 2rem; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin: 1rem 0; }
+  .endpoint { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
+  .method { background: var(--green); color: #000; padding: 0.2rem 0.6rem; border-radius: 4px; font-weight: 700; font-size: 0.8rem; font-family: monospace; }
+  .method.post { background: var(--orange); }
+  .path { font-family: monospace; color: var(--accent); font-size: 1rem; }
+  .desc { color: var(--text); margin-bottom: 1rem; }
+  table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.9rem; }
+  th { text-align: left; color: var(--heading); padding: 0.5rem; border-bottom: 2px solid var(--border); }
+  td { padding: 0.5rem; border-bottom: 1px solid var(--border); }
+  td:first-child { font-family: monospace; color: var(--accent); white-space: nowrap; }
+  code { background: var(--code-bg); padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.85rem; color: var(--orange); }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; overflow-x: auto; font-size: 0.85rem; line-height: 1.5; margin: 0.75rem 0; }
+  pre code { background: none; padding: 0; color: var(--text); }
+  .tag { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 3px; font-size: 0.75rem; font-weight: 600; margin-left: 0.5rem; }
+  .tag.auth { background: var(--red); color: #fff; }
+  .tag.body { background: #388bfd26; color: var(--accent); border: 1px solid var(--accent); }
+  .note { background: #388bfd15; border-left: 3px solid var(--accent); padding: 0.75rem 1rem; border-radius: 0 4px 4px 0; margin: 1rem 0; font-size: 0.9rem; }
+  .warn { background: #d2992215; border-left: 3px solid var(--orange); }
+  nav { position: sticky; top: 1rem; }
+  .toc { list-style: none; }
+  .toc li { margin: 0.3rem 0; }
+  .toc a { color: var(--accent); text-decoration: none; font-size: 0.9rem; }
+  .toc a:hover { text-decoration: underline; }
+  .field-group { margin: 0.5rem 0; }
+  .field-group summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>StarFit / Fitdays API</h1>
+<p class="subtitle">Reverse-engineered from StarFit iOS app v1.7.0 &mdash; captured via mitmproxy on April 10, 2026</p>
+
+<div class="note">
+  <strong>Base URL:</strong> <code>https://online-us.fitdays.cn/api</code><br>
+  <strong>User-Agent:</strong> <code>StarfitProject/1.7.0 (iPhone; iOS 26.3.1; Scale/3.00)</code><br>
+  <strong>Content-Type:</strong> <code>application/json</code> (POST bodies)
+</div>
+
+<h2>Authentication</h2>
+<div class="card">
+  <p>All requests use <strong>query parameter authentication</strong>. Every API call includes these query params:</p>
+  <table>
+    <tr><th>Param</th><th>Description</th><th>Example</th></tr>
+    <tr><td>token</td><td>Session token</td><td><code>cb46b2...155a</code></td></tr>
+    <tr><td>uid</td><td>User ID</td><td><code>104878728</code></td></tr>
+    <tr><td>sign</td><td>Request signature (MD5 hash, changes per request)</td><td><code>174f03...c815</code></td></tr>
+    <tr><td>client_id</td><td>Device client ID</td><td><code>C4F5A3...4397</code></td></tr>
+    <tr><td>app_ver</td><td>App version</td><td><code>1.7.2</code></td></tr>
+    <tr><td>capp_ver</td><td>Core app version</td><td><code>1.7.0</code></td></tr>
+    <tr><td>source</td><td>App source identifier</td><td><code>2007</code></td></tr>
+    <tr><td>timestamp</td><td>Unix timestamp</td><td><code>1775828323</code></td></tr>
+    <tr><td>request_id</td><td>Unique request UUID (uppercase hex)</td><td><code>4C0B7D...74C0</code></td></tr>
+    <tr><td>os_type</td><td>OS type (1=iOS)</td><td><code>1</code></td></tr>
+    <tr><td>device_model</td><td>Device model</td><td><code>iPhone17,3</code></td></tr>
+    <tr><td>language</td><td>Language code</td><td><code>en</code></td></tr>
+    <tr><td>country</td><td>Country code</td><td><code>US</code></td></tr>
+  </table>
+
+  <div class="note warn">
+    <strong>Sign computation:</strong> The <code>sign</code> parameter changes per request and is likely an MD5 hash of sorted query params + a secret key. The exact algorithm needs further reverse engineering. For now, you may be able to replay requests using a captured sign value, or the sign check may be optional.
+  </div>
+</div>
+
+<h2>Response Format</h2>
+<div class="card">
+  <p>All responses return JSON with this structure:</p>
+<pre><code>{
+  "code": 0,           // 0 = success
+  "msg": "操作成功",    // "Operation successful" in Chinese
+  "data": { ... }      // Endpoint-specific payload
+}</code></pre>
+</div>
+
+<h2 id="endpoints">Endpoints</h2>
+
+<!-- syncFromServer -->
+<div class="card" id="sync-from-server">
+  <div class="endpoint">
+    <span class="method post">POST</span>
+    <span class="path">/sync/syncFromServer</span>
+    <span class="tag auth">AUTH</span>
+    <span class="tag body">JSON BODY</span>
+  </div>
+  <p class="desc">Pull full weight and body composition history for the authenticated user. Returns all measurements within the specified time range.</p>
+
+  <h3>Request Body</h3>
+<pre><code>{
+  "start_time": 1775828323,   // Unix timestamp — range start (newer)
+  "end_time": 1681220323      // Unix timestamp — range end (older)
+}</code></pre>
+
+  <h3>Response — <code>data.weight_list[]</code></h3>
+  <table>
+    <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+    <tr><td>id</td><td>int</td><td>Unique measurement ID</td></tr>
+    <tr><td>uid</td><td>int</td><td>User ID (0 if unassigned)</td></tr>
+    <tr><td>suid</td><td>int</td><td>Sub-user ID</td></tr>
+    <tr><td>weight_g</td><td>int</td><td>Weight in grams</td></tr>
+    <tr><td>weight_kg</td><td>float</td><td>Weight in kg</td></tr>
+    <tr><td>weight_lb</td><td>float</td><td>Weight in lbs</td></tr>
+    <tr><td>kg_scale_division</td><td>int</td><td>Scale precision (kg)</td></tr>
+    <tr><td>lb_scale_division</td><td>int</td><td>Scale precision (lb)</td></tr>
+    <tr><td>bmi</td><td>float</td><td>Body Mass Index</td></tr>
+    <tr><td>bfr</td><td>float</td><td>Body Fat Rate (%)</td></tr>
+    <tr><td>sfr</td><td>float</td><td>Subcutaneous Fat Rate (%)</td></tr>
+    <tr><td>uvi</td><td>float</td><td>Visceral Fat Index</td></tr>
+    <tr><td>rosm</td><td>float</td><td>Skeletal Muscle Rate (%)</td></tr>
+    <tr><td>rom</td><td>float</td><td>Muscle Rate (%)</td></tr>
+    <tr><td>bmr</td><td>float</td><td>Basal Metabolic Rate (kcal)</td></tr>
+    <tr><td>bm</td><td>float</td><td>Bone Mass (kg)</td></tr>
+    <tr><td>vwc</td><td>float</td><td>Body Water Content (%)</td></tr>
+    <tr><td>bodyage</td><td>int</td><td>Metabolic Body Age</td></tr>
+    <tr><td>pp</td><td>float</td><td>Protein Percentage (%)</td></tr>
+    <tr><td>hr</td><td>int</td><td>Heart Rate (bpm)</td></tr>
+    <tr><td>adc</td><td>int</td><td>ADC impedance value</td></tr>
+    <tr><td>adc_list</td><td>string</td><td>Comma-separated impedance values (8-electrode)</td></tr>
+    <tr><td>measured_time</td><td>int</td><td>Unix timestamp of measurement</td></tr>
+    <tr><td>device_id</td><td>string</td><td>Scale hardware ID</td></tr>
+    <tr><td>data_id</td><td>string</td><td>Unique data record hash</td></tr>
+    <tr><td>electrode</td><td>int</td><td>Number of electrodes (4 or 8)</td></tr>
+    <tr><td>imp_data_id</td><td>string</td><td>Impedance data reference</td></tr>
+    <tr><td>ext_data</td><td>string (JSON)</td><td>Extended metrics (see below)</td></tr>
+    <tr><td>is_deleted</td><td>int</td><td>Soft delete flag</td></tr>
+    <tr><td>source</td><td>int</td><td>App source ID</td></tr>
+    <tr><td>created_at</td><td>string</td><td>ISO datetime</td></tr>
+    <tr><td>bfa_type</td><td>int</td><td>Body fat algorithm type</td></tr>
+    <tr><td>app_ver</td><td>string</td><td>App version used</td></tr>
+  </table>
+
+  <details class="field-group">
+    <summary>ext_data JSON fields (extended body composition)</summary>
+    <table>
+      <tr><th>Field</th><th>Description</th></tr>
+      <tr><td>bodyScore</td><td>Overall body score</td></tr>
+      <tr><td>bodyType</td><td>Body type classification</td></tr>
+      <tr><td>obesityDegree</td><td>Obesity degree</td></tr>
+      <tr><td>weightControl</td><td>Weight control recommendation (kg)</td></tr>
+      <tr><td>ffmControl</td><td>Fat-free mass control</td></tr>
+      <tr><td>bfmControl</td><td>Body fat mass control</td></tr>
+      <tr><td>targetWeight</td><td>Target weight</td></tr>
+      <tr><td>targetBodyfatMass</td><td>Target body fat mass</td></tr>
+      <tr><td>targetSMMMass</td><td>Target skeletal muscle mass</td></tr>
+      <tr><td>smi</td><td>Skeletal Muscle Index</td></tr>
+      <tr><td>whr</td><td>Waist-to-Hip Ratio</td></tr>
+      <tr><td>onlyMeasureWeight</td><td>"1" if weight-only (no impedance)</td></tr>
+      <tr><td>dataType</td><td>Data type flag</td></tr>
+      <tr><td>bmiMin/Standard/Max</td><td>BMI reference range</td></tr>
+      <tr><td>bfpMin/Standard/Max</td><td>Body fat % reference range</td></tr>
+      <tr><td>bfmMin/Standard/Max</td><td>Body fat mass reference range</td></tr>
+      <tr><td>smmMin/Standard/Max</td><td>Skeletal muscle mass reference range</td></tr>
+      <tr><td>bmrMin/Standard/Max</td><td>BMR reference range</td></tr>
+      <tr><td>weightMin/Standard/Max</td><td>Weight reference range</td></tr>
+      <tr><td>boneMin/Max</td><td>Bone mass reference range</td></tr>
+      <tr><td>waterMassMin/Max</td><td>Water mass reference range</td></tr>
+      <tr><td>muscleMassMin/Max</td><td>Muscle mass reference range</td></tr>
+      <tr><td>proteinMassMin/Max</td><td>Protein mass reference range</td></tr>
+      <tr><td>ffmStandard</td><td>Fat-free mass standard</td></tr>
+    </table>
+  </details>
+
+  <p>Also returns: <code>data.rulers_list[]</code>, <code>data.height_list[]</code></p>
+</div>
+
+<!-- syncIncrements -->
+<div class="card" id="sync-increments">
+  <div class="endpoint">
+    <span class="method post">POST</span>
+    <span class="path">/sync/syncIncrements</span>
+    <span class="tag auth">AUTH</span>
+    <span class="tag body">JSON BODY</span>
+  </div>
+  <p class="desc">Pull incremental changes since last sync. Same response format as syncFromServer but only returns new/changed records.</p>
+
+  <h3>Request Body</h3>
+<pre><code>{
+  "sync_time": 1775826258   // Unix timestamp of last sync
+}</code></pre>
+
+  <h3>Response</h3>
+<pre><code>{
+  "code": 0,
+  "msg": "操作成功",
+  "data": {
+    "weight_list": [ ... ],   // Same fields as syncFromServer
+    "rulers_list": [ ... ],
+    "height_list": [ ... ]
+  }
+}</code></pre>
+</div>
+
+<!-- getUsers -->
+<div class="card" id="get-users">
+  <div class="endpoint">
+    <span class="method post">POST</span>
+    <span class="path">/device/v3/getUsers</span>
+    <span class="tag auth">AUTH</span>
+    <span class="tag body">JSON BODY</span>
+  </div>
+  <p class="desc">Get user profiles associated with the scale device, including physical characteristics used for body composition calculations.</p>
+
+  <h3>Request Body</h3>
+<pre><code>{
+  "device_id": "03d1d0b1c8c81000"
+}</code></pre>
+
+  <h3>Response</h3>
+<pre><code>{
+  "code": 0,
+  "data": {
+    "res_info": {
+      "users": [
+        {
+          "suid": 104878737,
+          "uid": 104878728,
+          "nickname": "91680",
+          "sex": 0,              // 0=male, 1=female
+          "birthday": "1992-05-01 00:00:00",
+          "height": 201,         // cm
+          "target_weight": 102.0593,
+          "current_weight": "..."
+        },
+        {
+          "sex": 1,
+          "birthday": "1991-09-30 00:00:00",
+          "height": 168,
+          "current_weight": "58.819999694824"
+        }
+      ]
+    },
+    "device_id": "03d1d0b1c8c81000",
+    "ms_uid": 104878728,
+    "device_users": {
+      "104878728": [104878737]
+    }
+  }
+}</code></pre>
+</div>
+
+<!-- users/setting -->
+<div class="card" id="users-setting">
+  <div class="endpoint">
+    <span class="method post">POST</span>
+    <span class="path">/users/setting</span>
+    <span class="tag auth">AUTH</span>
+  </div>
+  <p class="desc">Get account settings including email, unit preferences, and auth tokens.</p>
+
+  <h3>Response</h3>
+<pre><code>{
+  "code": 0,
+  "data": {
+    "account": {
+      "uid": 104878728,
+      "email": "edwardcates7@gmail.com",
+      "source": 2007,
+      "weight_unit": 2,        // 1=kg, 2=lb
+      "ruler_unit": 1,
+      "active_suid": 104878737,
+      "token": "cb46b2bd...",
+      "refresh_token": "db8e64fa...",
+      "created_at": "2025-06-20 17:53:17",
+      "users": [
+        {
+          "suid": 104878737,
+          "nickname": "91680",
+          "sex": 0,
+          "birthday": "1992-05-01",
+          "height": 201,
+          "target_weight": 102.0593
+        }
+      ]
+    }
+  }
+}</code></pre>
+</div>
+
+<!-- getConfigs -->
+<div class="card" id="get-configs">
+  <div class="endpoint">
+    <span class="method post">POST</span>
+    <span class="path">/device/getConfigs</span>
+    <span class="tag auth">AUTH</span>
+  </div>
+  <p class="desc">Get device configuration including Bluetooth block lists, OTA info, and firmware upgrade availability.</p>
+
+  <h3>Response includes</h3>
+  <table>
+    <tr><th>Field</th><th>Description</th></tr>
+    <tr><td>bluetooth_block_list</td><td>Array of blocked BLE devices</td></tr>
+    <tr><td>is_upgrade</td><td>Firmware upgrade available flag</td></tr>
+    <tr><td>ota_info</td><td>OTA update details (file_name, file_size, file_crc, hardware_ver)</td></tr>
+  </table>
+</div>
+
+<!-- getDeviceInfo -->
+<div class="card" id="get-device-info">
+  <div class="endpoint">
+    <span class="method post">POST</span>
+    <span class="path">/device/getDeviceInfo</span>
+    <span class="tag auth">AUTH</span>
+  </div>
+  <p class="desc">Get scale device details and hardware information.</p>
+</div>
+
+<!-- getUnknownWeighDatas -->
+<div class="card" id="get-unknown-weigh">
+  <div class="endpoint">
+    <span class="method post">POST</span>
+    <span class="path">/device/getUnknownWeighDatas</span>
+    <span class="tag auth">AUTH</span>
+  </div>
+  <p class="desc">Get weight measurements not yet assigned to a user profile. Same weight_list format as syncFromServer. Useful for catching readings where the scale couldn't identify the user.</p>
+</div>
+
+<!-- getUnknownRulerDatas -->
+<div class="card" id="get-unknown-ruler">
+  <div class="endpoint">
+    <span class="method post">POST</span>
+    <span class="path">/device/getUnknownRulerDatas</span>
+    <span class="tag auth">AUTH</span>
+  </div>
+  <p class="desc">Get unassigned ruler/tape measurements.</p>
+</div>
+
+<!-- setUnit -->
+<div class="card" id="set-unit">
+  <div class="endpoint">
+    <span class="method post">POST</span>
+    <span class="path">/device/setUnit</span>
+    <span class="tag auth">AUTH</span>
+  </div>
+  <p class="desc">Set measurement unit preferences (kg/lb, cm/in).</p>
+</div>
+
+<!-- getFeedbackDatas -->
+<div class="card" id="get-feedback">
+  <div class="endpoint">
+    <span class="method post">POST</span>
+    <span class="path">/users/getFeedbackDatas</span>
+    <span class="tag auth">AUTH</span>
+    <span class="tag body">JSON BODY</span>
+  </div>
+  <p class="desc">Get user feedback data. Request body: <code>{}</code>. Typically returns empty array.</p>
+</div>
+
+<h2>Example: Fetch Weight History</h2>
+<div class="card">
+<pre><code>curl -X POST \
+  "https://online-us.fitdays.cn/api/sync/syncFromServer?\
+app_ver=1.7.2&\
+client_id=$FITDAYS_CLIENT_ID&\
+country=US&\
+device_model=iPhone17,3&\
+language=en&\
+os_type=1&\
+request_id=$(uuidgen | tr -d '-')&\
+source=2007&\
+timestamp=$(date +%s)&\
+token=$FITDAYS_TOKEN&\
+uid=$FITDAYS_UID&\
+sign=TBD&\
+capp_ver=1.7.0" \
+  -H "Content-Type: application/json" \
+  -H "User-Agent: StarfitProject/1.7.0 (iPhone; iOS 26.3.1; Scale/3.00)" \
+  -d '{"start_time": '$(date +%s)', "end_time": 1681220323}'</code></pre>
+</div>
+
+<h2>Notes</h2>
+<div class="card">
+  <ul style="padding-left: 1.5rem;">
+    <li><strong>Sign parameter:</strong> The <code>sign</code> is likely an MD5 of sorted query params concatenated with a secret. Further reverse engineering of the iOS binary is needed to determine the exact algorithm. Requests may work without a valid sign, or with a previously captured one.</li>
+    <li><strong>Token refresh:</strong> The <code>refresh_token</code> was captured but the refresh endpoint was not observed. Token may be long-lived.</li>
+    <li><strong>Timestamps:</strong> All timestamps are Unix epoch seconds. The <code>measured_time</code> on weight records is the actual weigh-in time.</li>
+    <li><strong>Body comp values of 0:</strong> Fields like bfr, rom, bmr etc. will be 0 when the scale only measured weight (no impedance reading). Check <code>ext_data.onlyMeasureWeight</code> to distinguish.</li>
+    <li><strong>Device ID:</strong> <code>03d1d0b1c8c81000</code> — this is the hardware identifier of the RunStar scale.</li>
+  </ul>
+</div>
+
+<p style="margin-top: 2rem; opacity: 0.5; font-size: 0.8rem; text-align: center;">
+  Generated from mitmproxy capture &mdash; StarFit v1.7.0 &mdash; April 10, 2026
+</p>
+
+</body>
+</html>

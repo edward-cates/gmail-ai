@@ -656,7 +656,33 @@ COACH_TOOLS = [
             "required": [],
         },
     },
+    {
+        "name": "get_body_composition",
+        "description": (
+            "Get the client's body composition data from their RunStar smart scale "
+            "(via StarFit/Fitdays). Returns weight (lb), body fat (%), muscle mass, "
+            "water mass, bone mass (in lbs), and visceral fat index for recent weigh-ins. "
+            "Use to track weight trends, body recomposition progress, and inform "
+            "nutrition/training adjustments. Some readings are weight-only "
+            "(no impedance). Can fetch a date range to spot trends."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Number of days of history to fetch (default 7, max 90).",
+                },
+            },
+            "required": [],
+        },
+    },
 ]
+
+FITDAYS_API_BASE = "https://online-us.fitdays.cn/api"
+FITDAYS_SIGN = "174f0339a0d71950d2fd33fbb073c815"
+FITDAYS_REQUEST_ID = "4C0B7DF3AAE64BEBD9A2A9D5C85A74C0"
+FITDAYS_TIMESTAMP = "1775828323"
 
 OURA_API_BASE = "https://api.ouraring.com/v2/usercollection"
 
@@ -772,6 +798,114 @@ def _format_calorie_data(trace_id, start_date, end_date):
 
     log_structured(trace_id, "oura_calorie_fetch", metadata={
         "start_date": start_date, "end_date": end_date, "days": len(activity_data),
+    })
+    return "\n".join(lines)
+
+
+def _fetch_fitdays_weights(trace_id):
+    """Fetch all weight data from Fitdays API. Returns list of weight entries or None."""
+    token = os.getenv("FITDAYS_TOKEN")
+    uid = os.getenv("FITDAYS_UID")
+    client_id = os.getenv("FITDAYS_CLIENT_ID")
+    if not all([token, uid, client_id]):
+        return None
+    params = {
+        "app_ver": "1.7.2",
+        "capp_ver": "1.7.0",
+        "client_id": client_id,
+        "country": "US",
+        "device_model": "iPhone17,3",
+        "language": "en",
+        "os_type": "1",
+        "request_id": FITDAYS_REQUEST_ID,
+        "source": os.getenv("FITDAYS_SOURCE", "2007"),
+        "timestamp": FITDAYS_TIMESTAMP,
+        "token": token,
+        "uid": uid,
+        "sign": FITDAYS_SIGN,
+    }
+    try:
+        r = requests.post(
+            f"{FITDAYS_API_BASE}/sync/syncFromServer",
+            params=params,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "StarfitProject/1.7.0 (iPhone; iOS 26.3.1; Scale/3.00)",
+            },
+            json={"start_time": int(time.time()), "end_time": 1681220323},
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != 0:
+            logger.warning(f"[{trace_id}] Fitdays API error: {data.get('msg')}")
+            return None
+        return data.get("data", {}).get("weight_list", [])
+    except Exception as e:
+        logger.warning(f"[{trace_id}] Fitdays fetch failed: {e}")
+        return None
+
+
+def _format_body_composition(trace_id, days):
+    """Fetch and format body composition data into a readable string."""
+    token = os.getenv("FITDAYS_TOKEN")
+    if not token:
+        return "RunStar scale is not configured (no Fitdays token)."
+
+    weight_list = _fetch_fitdays_weights(trace_id)
+    if weight_list is None:
+        return "Failed to fetch body composition data from Fitdays."
+
+    if not weight_list:
+        return "No body composition data available."
+
+    now = datetime.now(tz=CT)
+    cutoff = int((now - timedelta(days=days)).timestamp())
+    suid = os.getenv("FITDAYS_SUID", "")
+
+    # Filter to user's readings within date range, sorted newest first
+    # Exclude readings under 100 lb (likely pets/objects on scale)
+    filtered = sorted(
+        [w for w in weight_list
+         if w.get("measured_time", 0) >= cutoff
+         and w.get("weight_lb", 0) >= 100
+         and (not suid or str(w.get("suid", "")) == suid or w.get("suid", 0) == 0)],
+        key=lambda x: x.get("measured_time", 0),
+        reverse=True,
+    )
+
+    if not filtered:
+        return f"No body composition data in the last {days} days."
+
+    header = f"Body Composition Data (last {days} days, {len(filtered)} readings)"
+    lines = [header]
+
+    for w in filtered:
+        ts = w.get("measured_time", 0)
+        dt = datetime.fromtimestamp(ts, tz=CT).strftime("%Y-%m-%d %H:%M")
+        wlb = w.get("weight_lb", 0)
+        bfr = w.get("bfr", 0)
+
+        muscle_pct = w.get("rom", 0)
+        muscle_lb = wlb * muscle_pct / 100 if muscle_pct else 0
+        water_pct = w.get("vwc", 0)
+        water_lb = wlb * water_pct / 100 if water_pct else 0
+        bone_kg = w.get("bm", 0)
+        bone_lb = bone_kg * 2.20462 if bone_kg else 0
+
+        line = f"\n{dt}  —  {wlb:.1f} lb"
+        if bfr:
+            line += (
+                f"  |  Fat: {bfr:.1f}%  Muscle: {muscle_lb:.1f} lb"
+                f"  Water: {water_lb:.1f} lb  Bone: {bone_lb:.1f} lb"
+                f"  Visceral: {w.get('uvi', 0)}"
+            )
+        else:
+            line += "  (weight only)"
+        lines.append(line)
+
+    log_structured(trace_id, "fitdays_fetch", metadata={
+        "days": days, "readings": len(filtered),
     })
     return "\n".join(lines)
 
@@ -893,6 +1027,10 @@ def execute_tool(trello, trace_id, tool_name, tool_input):
             start = tool_input.get("start_date") or today
             end = tool_input.get("end_date") or start
             return _format_calorie_data(trace_id, start, end)
+
+        elif tool_name == "get_body_composition":
+            days = min(tool_input.get("days", 7), 90)
+            return _format_body_composition(trace_id, days)
 
         else:
             return f"Unknown tool: {tool_name}"
