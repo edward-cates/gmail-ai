@@ -513,6 +513,7 @@ deploy-newsletter-digest-trigger:
 		--source=. \
 		--entry-point=trigger_newsletter_digest_http \
 		--trigger-http \
+		--allow-unauthenticated \
 		--timeout=60s \
 		--memory=256Mi \
 		--project=$(PROJECT_ID) \

@@ -197,6 +197,7 @@ things are worth mentioning, that's fine — don't pad it.
 
 For each item:
 - Lead with the insight or news, not the source
+- Be specific — names, numbers, places. "Nashville landed a WNBA expansion team" not "a city got a new sports franchise"
 - Keep it to 2-3 sentences max
 - Note which newsletter it came from in parentheses at the end
 
