@@ -657,6 +657,25 @@ COACH_TOOLS = [
         },
     },
     {
+        "name": "get_walking_data",
+        "description": (
+            "Get the client's daily treadmill walking data from their UREVO treadmill. "
+            "Returns date, session count, total distance (miles), duration, calories, "
+            "steps, and average speed for each day. Use to check if the client hit their "
+            "daily walking goal, track consistency, and spot trends."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Number of days of history to fetch (default 7, max 90).",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_body_composition",
         "description": (
             "Get the client's body composition data from their RunStar smart scale "
@@ -798,6 +817,55 @@ def _format_calorie_data(trace_id, start_date, end_date):
 
     log_structured(trace_id, "oura_calorie_fetch", metadata={
         "start_date": start_date, "end_date": end_date, "days": len(activity_data),
+    })
+    return "\n".join(lines)
+
+
+UREVO_API_BASE = "https://urevo-treadmill-ab479e4945aa.herokuapp.com/api"
+
+
+def _format_walking_data(trace_id, days):
+    """Fetch and format treadmill walking data into a readable string."""
+    days = min(days, 90)
+    try:
+        r = requests.get(
+            f"{UREVO_API_BASE}/daily",
+            params={"days": days},
+            timeout=10,
+        )
+        r.raise_for_status()
+        daily = r.json()
+    except Exception as e:
+        logger.warning(f"[{trace_id}] UREVO fetch failed: {e}")
+        return "Failed to fetch walking data from UREVO treadmill."
+
+    if not daily:
+        return f"No treadmill data in the last {days} days."
+
+    header = f"Treadmill Walking Data (last {days} days, {len(daily)} days with sessions)"
+    lines = [header]
+
+    for d in daily:
+        date = d.get("date", "?")
+        sessions = d.get("session_count", 0)
+        dist_m = d.get("total_distance_m", 0)
+        dist_mi = dist_m / 1609.34
+        dur_s = d.get("total_duration_s", 0)
+        dur_min = dur_s / 60
+        cals = d.get("total_calories", 0)
+        steps = d.get("total_steps", 0)
+        avg_spd = d.get("avg_speed_kmh", 0)
+        avg_mph = avg_spd * 0.621371
+
+        line = (
+            f"\n{date}  —  {dist_mi:.2f} mi  |  {dur_min:.0f} min  |  "
+            f"{steps} steps  |  {cals} cal  |  {avg_mph:.1f} mph avg  "
+            f"({sessions} session{'s' if sessions != 1 else ''})"
+        )
+        lines.append(line)
+
+    log_structured(trace_id, "urevo_fetch", metadata={
+        "days": days, "days_with_data": len(daily),
     })
     return "\n".join(lines)
 
@@ -1027,6 +1095,10 @@ def execute_tool(trello, trace_id, tool_name, tool_input):
             start = tool_input.get("start_date") or today
             end = tool_input.get("end_date") or start
             return _format_calorie_data(trace_id, start, end)
+
+        elif tool_name == "get_walking_data":
+            days = min(tool_input.get("days", 7), 90)
+            return _format_walking_data(trace_id, days)
 
         elif tool_name == "get_body_composition":
             days = min(tool_input.get("days", 7), 90)
