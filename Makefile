@@ -379,7 +379,7 @@ deploy-coach:
 		--max-retries=0 \
 		--service-account="$$SERVICE_ACCOUNT" \
 		--set-env-vars="TRELLO_COACH_BOARD_ID=IrsYdZHV" \
-		--set-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest,TRELLO_API_KEY=trello-api-key:latest,TRELLO_TOKEN=trello-token:latest,OURA_ACCESS_TOKEN=oura-access-token:latest,FITDAYS_TOKEN=fitdays-token:latest,FITDAYS_UID=fitdays-uid:latest,FITDAYS_CLIENT_ID=fitdays-client-id:latest,FITDAYS_SUID=fitdays-suid:latest,FITDAYS_SOURCE=fitdays-source:latest" \
+		--set-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest,TRELLO_API_KEY=trello-api-key:latest,TRELLO_TOKEN=trello-token:latest,OURA_ACCESS_TOKEN=oura-access-token:latest,FITDAYS_TOKEN=fitdays-token:latest,FITDAYS_UID=fitdays-uid:latest,FITDAYS_CLIENT_ID=fitdays-client-id:latest,FITDAYS_SUID=fitdays-suid:latest,FITDAYS_SOURCE=fitdays-source:latest,ALLTHATIEAT_USER_ID=allthatieat-user-id:latest" \
 		--project=$(PROJECT_ID) && \
 	echo "✓ coach job deployed!"
 

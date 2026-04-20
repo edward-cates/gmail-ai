@@ -696,6 +696,49 @@ COACH_TOOLS = [
             "required": [],
         },
     },
+    {
+        "name": "get_food_log",
+        "description": (
+            "Get the client's food log from AllThatIEat (allthatieat.com) for the "
+            "last N days. Each entry has title, timestamp, calories, protein, carbs, "
+            "fat, fiber, and sugar, grouped by day with daily totals. "
+            "The client does NOT log every bite — entries are AI-analyzed photos of "
+            "meals, so treat the log as a partial record, not a complete intake. "
+            "Use this to ground nutrition conversations (what's already been eaten "
+            "today, recent patterns) and to help plan the rest of the day. "
+            "For full ingredient/micronutrient/additive detail on a specific entry, "
+            "call get_food_entry with the entry's id."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Number of days of history to fetch (default 1, max 30).",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_food_entry",
+        "description": (
+            "Get full detail for a single AllThatIEat food entry: ingredients with "
+            "descriptions, micronutrients, additives, and other substances (caffeine, "
+            "alcohol, etc.). Use after get_food_log when you need to dig into a "
+            "specific meal."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entry_id": {
+                    "type": "integer",
+                    "description": "AllThatIEat food entry id (from get_food_log).",
+                },
+            },
+            "required": ["entry_id"],
+        },
+    },
 ]
 
 FITDAYS_API_BASE = "https://online-us.fitdays.cn/api"
@@ -978,6 +1021,191 @@ def _format_body_composition(trace_id, days):
     return "\n".join(lines)
 
 
+ALLTHATIEAT_API_BASE = "https://allthatieat.com/api"
+
+
+def _fetch_allthatieat_entries(trace_id, days=None):
+    """Fetch food entries for the configured user, optionally filtered by last N days.
+
+    Filtering happens server-side via the ?days= query param. Returns list or None.
+    """
+    user_id = os.getenv("ALLTHATIEAT_USER_ID")
+    if not user_id:
+        return None
+    params = {}
+    if days is not None:
+        params["days"] = days
+    try:
+        r = requests.get(
+            f"{ALLTHATIEAT_API_BASE}/users/{user_id}/data",
+            params=params,
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data.get("foodEntries", [])
+    except Exception as e:
+        logger.warning(f"[{trace_id}] AllThatIEat fetch failed: {e}")
+        return None
+
+
+def _parse_entry_datetimes(entries):
+    """Drop soft-deleted entries and parse createdAt; return (dt, entry) pairs newest-first."""
+    out = []
+    for e in entries:
+        if e.get("deletedAt"):
+            continue
+        created = e.get("createdAt")
+        if not created:
+            continue
+        try:
+            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        out.append((dt, e))
+    out.sort(key=lambda x: x[0], reverse=True)
+    return out
+
+
+def _format_food_log(trace_id, days):
+    """Fetch and format food log grouped by day with totals."""
+    if not os.getenv("ALLTHATIEAT_USER_ID"):
+        return "AllThatIEat is not configured (no user ID)."
+
+    days = min(days, 30)
+    entries = _fetch_allthatieat_entries(trace_id, days=days)
+    if entries is None:
+        return "Failed to fetch food log from AllThatIEat."
+
+    dated = _parse_entry_datetimes(entries)
+    if not dated:
+        return f"No food entries in the last {days} day{'s' if days != 1 else ''}."
+
+    # Group by Central Time day
+    by_day = {}
+    for dt, entry in dated:
+        day_key = dt.astimezone(CT).strftime("%Y-%m-%d")
+        by_day.setdefault(day_key, []).append((dt, entry))
+
+    header = f"Food Log (last {days} day{'s' if days != 1 else ''}, {len(dated)} entries)"
+    lines = [header]
+
+    for day in sorted(by_day.keys(), reverse=True):
+        day_entries = by_day[day]
+        totals = {"calories": 0.0, "protein": 0.0, "carbohydrates": 0.0,
+                  "fat": 0.0, "fiber": 0.0, "sugar": 0.0}
+        any_macro = False
+        for _, e in day_entries:
+            macros = e.get("nutritionMacros") or {}
+            for k in totals:
+                v = macros.get(k)
+                if v is not None:
+                    totals[k] += v
+                    any_macro = True
+
+        lines.append(f"\n{day}")
+        if any_macro:
+            lines.append(
+                f"  Daily totals: {totals['calories']:.0f} cal  |  "
+                f"P {totals['protein']:.0f}g  C {totals['carbohydrates']:.0f}g  "
+                f"F {totals['fat']:.0f}g  |  fiber {totals['fiber']:.0f}g  "
+                f"sugar {totals['sugar']:.0f}g"
+            )
+        for dt, e in sorted(day_entries, key=lambda x: x[0]):
+            time_str = dt.astimezone(CT).strftime("%-I:%M %p").lower()
+            title = e.get("title", "Untitled")
+            macros = e.get("nutritionMacros") or {}
+            cal = macros.get("calories")
+            prot = macros.get("protein")
+            carb = macros.get("carbohydrates")
+            fat = macros.get("fat")
+            macro_str = ""
+            if cal is not None:
+                macro_str = (
+                    f"  —  {cal:.0f} cal  |  "
+                    f"P {prot or 0:.0f}g  C {carb or 0:.0f}g  F {fat or 0:.0f}g"
+                )
+            lines.append(f"  [{time_str}] {title} (id: {e.get('id')}){macro_str}")
+
+    log_structured(trace_id, "allthatieat_fetch", metadata={
+        "days": days, "entries": len(dated),
+    })
+    return "\n".join(lines)
+
+
+def _format_food_entry(trace_id, entry_id):
+    """Format full detail for a single food entry.
+
+    Fetches a 30-day window first; falls back to 365 days if the entry isn't found.
+    """
+    if not os.getenv("ALLTHATIEAT_USER_ID"):
+        return "AllThatIEat is not configured (no user ID)."
+
+    entry = None
+    for window in (30, 365):
+        entries = _fetch_allthatieat_entries(trace_id, days=window)
+        if entries is None:
+            return "Failed to fetch food log from AllThatIEat."
+        entry = next((e for e in entries if e.get("id") == entry_id), None)
+        if entry:
+            break
+    if not entry:
+        return f"Food entry {entry_id} not found."
+
+    lines = [f"### {entry.get('title', 'Untitled')} (id: {entry_id})"]
+    created = entry.get("createdAt", "")
+    if created:
+        lines.append(f"Logged: {_utc_to_ct(created)}")
+    if entry.get("description"):
+        lines.append(entry["description"])
+
+    macros = entry.get("nutritionMacros") or {}
+    if macros:
+        lines.append("")
+        lines.append("Macros:")
+        for k in ("calories", "protein", "carbohydrates", "fat", "fiber", "sugar"):
+            v = macros.get(k)
+            if v is not None:
+                unit = "kcal" if k == "calories" else "g"
+                lines.append(f"  {k}: {v:.1f} {unit}")
+
+    ingredients = entry.get("ingredients", [])
+    if ingredients:
+        lines.append("")
+        lines.append("Ingredients:")
+        for i in sorted(ingredients, key=lambda x: x.get("order", 0)):
+            desc = f" — {i['description']}" if i.get("description") else ""
+            lines.append(f"  - {i.get('name', '?')}{desc}")
+
+    micros = entry.get("nutritionMicros", [])
+    if micros:
+        lines.append("")
+        lines.append("Micronutrients:")
+        for m in sorted(micros, key=lambda x: x.get("order", 0)):
+            dv = m.get("dailyValuePercent")
+            dv_str = f" ({dv}% DV)" if dv is not None else ""
+            lines.append(f"  - {m.get('name')}: {m.get('amount')}{dv_str}")
+
+    additives = entry.get("nutritionAdditives", [])
+    if additives:
+        lines.append("")
+        lines.append("Additives:")
+        for a in sorted(additives, key=lambda x: x.get("order", 0)):
+            desc = f" — {a['description']}" if a.get("description") else ""
+            lines.append(f"  - {a.get('name')}: {a.get('amount')}{desc}")
+
+    others = entry.get("nutritionOtherSubstances", [])
+    if others:
+        lines.append("")
+        lines.append("Other substances:")
+        for o in sorted(others, key=lambda x: x.get("order", 0)):
+            desc = f" — {o['description']}" if o.get("description") else ""
+            lines.append(f"  - {o.get('name')}: {o.get('amount')}{desc}")
+
+    log_structured(trace_id, "allthatieat_entry_fetch", metadata={"entry_id": entry_id})
+    return "\n".join(lines)
+
+
 def execute_tool(trello, trace_id, tool_name, tool_input):
     """Execute a tool call and return the result string. Errors returned as strings."""
     try:
@@ -1104,6 +1332,13 @@ def execute_tool(trello, trace_id, tool_name, tool_input):
             days = min(tool_input.get("days", 7), 90)
             return _format_body_composition(trace_id, days)
 
+        elif tool_name == "get_food_log":
+            days = min(tool_input.get("days", 1), 30)
+            return _format_food_log(trace_id, days)
+
+        elif tool_name == "get_food_entry":
+            return _format_food_entry(trace_id, tool_input["entry_id"])
+
         else:
             return f"Unknown tool: {tool_name}"
 
@@ -1188,29 +1423,30 @@ Today is {day_of_week}, {date_str}. Current time: {time_str} Central.
 
 ## Board Structure
 - **Exercise** — one card per workout (title, routine in description, checklist of exercises)
-- **Nutrition** — cards for meals, grocery runs, supplements (title, description, checklist)
+- **Nutrition** — a daily conversational card for nutrition planning and questions (NOT food logging — food logging lives in AllThatIEat, read via get_food_log)
 - **Forum** — daily check-in card for open conversation throughout the day
 - **Memories** — long-term memory cards organized by category (one card per topic, comments are individual memories)
 
 ## Your Task
 1. Use read_card to inspect any recent cards that look relevant
 2. Archive old completed cards from previous days
-3. Create today's cards using create_card:
+3. Call get_food_log(days=1) to see what the client ate yesterday, then add a concise one-line memory comment to the "Food Log" memory card (create it on the Memories list if it doesn't exist) — e.g. daily totals + a quick note on a standout meal. The client does not log manually; this summary is how we keep a durable record alongside the API.
+4. Create today's cards using create_card:
    - Exercise card (skip on rest days): title like "{day_of_week}, {date_str} — [Focus Area]", description with full workout, checklist of exercises with weights/sets/reps, conversational comment
-   - Nutrition card: title like "{day_of_week}, {date_str} — Nutrition", description with meal plan, checklist of actionable items
+   - Nutrition card: title like "{day_of_week}, {date_str} — Nutrition", conversational comment opening a nutrition planning conversation (e.g. reference yesterday's intake from the food log, ask what they're thinking for today). Do NOT make a meal-log checklist — this card is for questions and planning, not logging.
    - Forum check-in card: title like "{day_of_week}, {date_str} — Check In", conversational comment prompting the client
-4. Update the spec or add memories as needed
+5. Update the spec or add other memories as needed
 
 ## Rules
 - Be specific to THEIR program — exercises, weights, sets, reps, rest periods
 - Include warm-up guidance if relevant
 - Exercise comments should be conversational and specific (not generic motivation)
-- Nutrition checklist items should be actionable (meals to eat, items to buy)
 - If the spec is empty, introduce yourself and ask what they're working on
 - On rest days, skip the exercise card but still provide nutrition and forum
 - The forum card is a daily check-in — open-ended prompt for the client
 - Use get_sleep_data to check last night's sleep and readiness before programming today's workout
 - Use get_calorie_data to check recent calorie expenditure when planning nutrition
+- Use get_food_log for actual food intake (it's AI-analyzed photos, so treat it as a partial record — the client doesn't log every bite)
 
 ## Two-Tier Memory System
 **Spec** (board description) — your working document:
@@ -1295,7 +1531,7 @@ Today is {day_of_week}. Current time: {time_str} Central.
 
 ## Board Structure
 - **Exercise** — workout cards (one per session)
-- **Nutrition** — meal plans, grocery lists, supplement tracking
+- **Nutrition** — a daily conversational card for nutrition questions and planning. Food intake itself is NOT logged here — it lives in AllThatIEat (read via get_food_log). Typical use: "help me plan the rest of the day, what if I eat ___?"
 - **Forum** — ongoing discussion topics
 - **Memories** — long-term memory cards organized by category
 
@@ -1310,9 +1546,10 @@ Today is {day_of_week}. Current time: {time_str} Central.
 - If they ask a question, give a direct answer then brief explanation
 - If they share a concern (injury, plateau, motivation), address it with empathy and a plan
 - Use read_card to inspect other cards if you need more context
-- Use create_card when the client asks for a new workout plan, meal plan, grocery list, etc.
+- Use create_card when the client asks for a new workout plan, grocery list, etc.
 - Use get_sleep_data if the client asks about sleep or recovery
 - Use get_calorie_data if the client asks about calories or energy expenditure
+- Use get_food_log when nutrition comes up — it shows what's been eaten today (AI-analyzed from photos, partial record). Use get_food_entry for full ingredient/micronutrient detail on a specific meal. This is how you answer "what have I had today?" and "help me plan the rest of the day."
 
 ## Two-Tier Memory System
 **Spec** (board description) — your working document:
