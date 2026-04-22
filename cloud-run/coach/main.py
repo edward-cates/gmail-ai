@@ -657,6 +657,132 @@ COACH_TOOLS = [
         },
     },
     {
+        "name": "get_workouts",
+        "description": (
+            "Get the client's Oura Ring workout sessions for a date or date range. "
+            "Returns each workout's activity type (running, cycling, strength, etc.), "
+            "start/end time, duration, distance (when applicable), calories burned, "
+            "intensity (easy/moderate/hard), and source (auto-detected, manual, or "
+            "from a connected app like Apple Health). Use to see what training the "
+            "client actually did vs what was programmed, spot missed sessions, and "
+            "calibrate volume/intensity going forward."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date (YYYY-MM-DD). Defaults to today.",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "End date (YYYY-MM-DD). Defaults to start_date.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_sleep_sessions",
+        "description": (
+            "Get the client's detailed Oura Ring sleep sessions for a date or date "
+            "range. Unlike get_sleep_data (aggregate daily score), this returns each "
+            "session's physiological data: average HRV (rMSSD, ms), lowest heart rate "
+            "(bpm), average heart rate, average breath rate, total sleep duration, "
+            "time in deep/REM/light sleep, sleep latency, efficiency, and awake time. "
+            "Use when HRV trends, resting HR, or sleep architecture matter — spotting "
+            "overtraining, illness onset, or recovery quality."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date (YYYY-MM-DD). Defaults to today.",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "End date (YYYY-MM-DD). Defaults to start_date.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_stress_data",
+        "description": (
+            "Get the client's Oura Ring daily stress data for a date or date range. "
+            "Returns stress high (seconds in high-stress state), recovery high "
+            "(seconds in high-recovery state), and day summary (restored, normal, "
+            "stressful, or very stressful). Use to spot accumulated stress that "
+            "should push training down, or recovery deficits that warrant a rest day."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date (YYYY-MM-DD). Defaults to today.",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "End date (YYYY-MM-DD). Defaults to start_date.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_vo2_max",
+        "description": (
+            "Get the client's Oura Ring VO2 max estimates (ml/kg/min) for a date "
+            "range. VO2 max is the gold-standard cardiovascular fitness metric. "
+            "Oura estimates it from walking/running sessions — not every day has a "
+            "reading. Use to track long-term cardio fitness trends and validate "
+            "whether current training is improving aerobic capacity. "
+            "Defaults to the last 30 days."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date (YYYY-MM-DD). Defaults to 30 days ago.",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "End date (YYYY-MM-DD). Defaults to today.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_resilience",
+        "description": (
+            "Get the client's Oura Ring daily resilience for a date or date range. "
+            "Resilience is a synthesized measure of how well the body is handling "
+            "stress over the long term, with contributors (sleep recovery, daytime "
+            "recovery, stress load) and a level (limited, adequate, solid, strong, "
+            "exceptional). Use for longer-horizon coaching decisions: whether the "
+            "client can tolerate a training block increase, or needs a deload."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date (YYYY-MM-DD). Defaults to today.",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "End date (YYYY-MM-DD). Defaults to start_date.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_walking_data",
         "description": (
             "Get the client's daily treadmill walking data from their UREVO treadmill. "
@@ -759,7 +885,7 @@ def _fetch_oura(trace_id, data_type, start_date, end_date):
             f"{OURA_API_BASE}/{data_type}",
             headers={"Authorization": f"Bearer {token}"},
             params={"start_date": start_date, "end_date": end_date},
-            timeout=10,
+            timeout=30,
         )
         r.raise_for_status()
         return r.json().get("data", [])
@@ -860,6 +986,201 @@ def _format_calorie_data(trace_id, start_date, end_date):
 
     log_structured(trace_id, "oura_calorie_fetch", metadata={
         "start_date": start_date, "end_date": end_date, "days": len(activity_data),
+    })
+    return "\n".join(lines)
+
+
+def _iso_duration_minutes(start_iso, end_iso):
+    """Return minutes between two ISO timestamps, or 0 if either is missing/unparseable."""
+    if not start_iso or not end_iso:
+        return 0
+    try:
+        s = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        e = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+        return (e - s).total_seconds() / 60
+    except Exception:
+        return 0
+
+
+def _format_workouts(trace_id, start_date, end_date):
+    """Fetch and format Oura workout sessions."""
+    token = os.getenv("OURA_ACCESS_TOKEN")
+    if not token:
+        return "Oura Ring is not configured (no access token)."
+    workouts = _fetch_oura(trace_id, "workout", start_date, end_date)
+    if workouts is None:
+        return f"Failed to fetch workouts for {start_date} to {end_date}."
+    if not workouts:
+        return f"No workouts logged for {start_date} to {end_date}."
+
+    header = f"Oura Workouts for {start_date}" if start_date == end_date else (
+        f"Oura Workouts for {start_date} to {end_date}"
+    )
+    lines = [header]
+    for w in sorted(workouts, key=lambda e: e.get("start_datetime", "")):
+        day = w.get("day", "?")
+        activity = w.get("activity", "unknown")
+        intensity = w.get("intensity", "?")
+        source = w.get("source", "?")
+        dur_min = _iso_duration_minutes(w.get("start_datetime"), w.get("end_datetime"))
+        cals = w.get("calories")
+        dist_m = w.get("distance")
+        label = w.get("label") or ""
+        lines.append(f"\n{day}: {activity} ({intensity}, {source})")
+        if label:
+            lines.append(f"  Label: {label}")
+        if w.get("start_datetime"):
+            lines.append(f"  Start: {w['start_datetime']}")
+        if dur_min:
+            lines.append(f"  Duration: {dur_min:.0f} min")
+        if cals is not None:
+            lines.append(f"  Calories: {cals}")
+        if dist_m:
+            lines.append(f"  Distance: {dist_m/1000:.2f} km ({dist_m/1609.34:.2f} mi)")
+    log_structured(trace_id, "oura_workouts_fetch", metadata={
+        "start_date": start_date, "end_date": end_date, "count": len(workouts),
+    })
+    return "\n".join(lines)
+
+
+def _format_sleep_sessions(trace_id, start_date, end_date):
+    """Fetch and format Oura detailed sleep sessions (HRV, RHR, phases)."""
+    token = os.getenv("OURA_ACCESS_TOKEN")
+    if not token:
+        return "Oura Ring is not configured (no access token)."
+    sessions = _fetch_oura(trace_id, "sleep", start_date, end_date)
+    if sessions is None:
+        return f"Failed to fetch sleep sessions for {start_date} to {end_date}."
+    if not sessions:
+        return f"No sleep sessions for {start_date} to {end_date}."
+
+    header = f"Oura Sleep Sessions for {start_date}" if start_date == end_date else (
+        f"Oura Sleep Sessions for {start_date} to {end_date}"
+    )
+    lines = [header]
+    for s in sorted(sessions, key=lambda e: (e.get("day", ""), e.get("bedtime_start", ""))):
+        day = s.get("day", "?")
+        stype = s.get("type", "?")
+        total_min = (s.get("total_sleep_duration") or 0) / 60
+        deep_min = (s.get("deep_sleep_duration") or 0) / 60
+        rem_min = (s.get("rem_sleep_duration") or 0) / 60
+        light_min = (s.get("light_sleep_duration") or 0) / 60
+        awake_min = (s.get("awake_time") or 0) / 60
+        latency_min = (s.get("latency") or 0) / 60
+        eff = s.get("efficiency", "?")
+        avg_hrv = s.get("average_hrv")
+        low_hr = s.get("lowest_heart_rate")
+        avg_hr = s.get("average_heart_rate")
+        avg_br = s.get("average_breath")
+        bedtime = s.get("bedtime_start", "")
+        lines.append(f"\n{day}: {stype} ({total_min:.0f} min total)")
+        if bedtime:
+            lines.append(f"  Bedtime start: {bedtime}")
+        lines.append(
+            f"  Efficiency: {eff}%  Latency: {latency_min:.0f} min  "
+            f"Awake: {awake_min:.0f} min"
+        )
+        lines.append(
+            f"  Phases: Deep {deep_min:.0f} / REM {rem_min:.0f} / "
+            f"Light {light_min:.0f} min"
+        )
+        parts = []
+        if avg_hrv is not None:
+            parts.append(f"HRV {avg_hrv} ms")
+        if low_hr is not None:
+            parts.append(f"Low HR {low_hr} bpm")
+        if avg_hr is not None:
+            parts.append(f"Avg HR {avg_hr} bpm")
+        if avg_br is not None:
+            parts.append(f"Breath {avg_br}/min")
+        if parts:
+            lines.append(f"  Physio: {', '.join(parts)}")
+    log_structured(trace_id, "oura_sleep_sessions_fetch", metadata={
+        "start_date": start_date, "end_date": end_date, "count": len(sessions),
+    })
+    return "\n".join(lines)
+
+
+def _format_stress(trace_id, start_date, end_date):
+    """Fetch and format Oura daily stress data."""
+    token = os.getenv("OURA_ACCESS_TOKEN")
+    if not token:
+        return "Oura Ring is not configured (no access token)."
+    data = _fetch_oura(trace_id, "daily_stress", start_date, end_date)
+    if data is None:
+        return f"Failed to fetch stress data for {start_date} to {end_date}."
+    if not data:
+        return f"No stress data for {start_date} to {end_date}."
+
+    header = f"Oura Stress for {start_date}" if start_date == end_date else (
+        f"Oura Stress for {start_date} to {end_date}"
+    )
+    lines = [header]
+    for e in sorted(data, key=lambda d: d.get("day", "")):
+        day = e.get("day", "?")
+        high_min = (e.get("stress_high") or 0) / 60
+        recov_min = (e.get("recovery_high") or 0) / 60
+        summary = e.get("day_summary", "?")
+        lines.append(f"\n{day}: {summary}")
+        lines.append(
+            f"  Stress high: {high_min:.0f} min  Recovery high: {recov_min:.0f} min"
+        )
+    log_structured(trace_id, "oura_stress_fetch", metadata={
+        "start_date": start_date, "end_date": end_date, "days": len(data),
+    })
+    return "\n".join(lines)
+
+
+def _format_vo2_max(trace_id, start_date, end_date):
+    """Fetch and format Oura VO2 max estimates."""
+    token = os.getenv("OURA_ACCESS_TOKEN")
+    if not token:
+        return "Oura Ring is not configured (no access token)."
+    data = _fetch_oura(trace_id, "vO2_max", start_date, end_date)
+    if data is None:
+        return f"Failed to fetch VO2 max for {start_date} to {end_date}."
+    if not data:
+        return f"No VO2 max readings for {start_date} to {end_date}."
+
+    header = f"Oura VO2 Max for {start_date}" if start_date == end_date else (
+        f"Oura VO2 Max for {start_date} to {end_date}"
+    )
+    lines = [header]
+    for e in sorted(data, key=lambda d: d.get("day", "")):
+        day = e.get("day", "?")
+        vo2 = e.get("vo2_max", "?")
+        lines.append(f"  {day}: {vo2} ml/kg/min")
+    log_structured(trace_id, "oura_vo2_max_fetch", metadata={
+        "start_date": start_date, "end_date": end_date, "readings": len(data),
+    })
+    return "\n".join(lines)
+
+
+def _format_resilience(trace_id, start_date, end_date):
+    """Fetch and format Oura daily resilience."""
+    token = os.getenv("OURA_ACCESS_TOKEN")
+    if not token:
+        return "Oura Ring is not configured (no access token)."
+    data = _fetch_oura(trace_id, "daily_resilience", start_date, end_date)
+    if data is None:
+        return f"Failed to fetch resilience for {start_date} to {end_date}."
+    if not data:
+        return f"No resilience data for {start_date} to {end_date}."
+
+    header = f"Oura Resilience for {start_date}" if start_date == end_date else (
+        f"Oura Resilience for {start_date} to {end_date}"
+    )
+    lines = [header]
+    for e in sorted(data, key=lambda d: d.get("day", "")):
+        day = e.get("day", "?")
+        level = e.get("level", "?")
+        contributors = e.get("contributors")
+        lines.append(f"\n{day}: {level}")
+        if isinstance(contributors, dict) and contributors:
+            parts = [f"{k.replace('_', ' ').title()}: {v}" for k, v in contributors.items()]
+            lines.append(f"  Contributors: {', '.join(parts)}")
+    log_structured(trace_id, "oura_resilience_fetch", metadata={
+        "start_date": start_date, "end_date": end_date, "days": len(data),
     })
     return "\n".join(lines)
 
@@ -1323,6 +1644,36 @@ def execute_tool(trello, trace_id, tool_name, tool_input):
             start = tool_input.get("start_date") or today
             end = tool_input.get("end_date") or start
             return _format_calorie_data(trace_id, start, end)
+
+        elif tool_name == "get_workouts":
+            today = datetime.now(tz=CT).strftime("%Y-%m-%d")
+            start = tool_input.get("start_date") or today
+            end = tool_input.get("end_date") or start
+            return _format_workouts(trace_id, start, end)
+
+        elif tool_name == "get_sleep_sessions":
+            today = datetime.now(tz=CT).strftime("%Y-%m-%d")
+            start = tool_input.get("start_date") or today
+            end = tool_input.get("end_date") or start
+            return _format_sleep_sessions(trace_id, start, end)
+
+        elif tool_name == "get_stress_data":
+            today = datetime.now(tz=CT).strftime("%Y-%m-%d")
+            start = tool_input.get("start_date") or today
+            end = tool_input.get("end_date") or start
+            return _format_stress(trace_id, start, end)
+
+        elif tool_name == "get_vo2_max":
+            now = datetime.now(tz=CT)
+            start = tool_input.get("start_date") or (now - timedelta(days=30)).strftime("%Y-%m-%d")
+            end = tool_input.get("end_date") or now.strftime("%Y-%m-%d")
+            return _format_vo2_max(trace_id, start, end)
+
+        elif tool_name == "get_resilience":
+            today = datetime.now(tz=CT).strftime("%Y-%m-%d")
+            start = tool_input.get("start_date") or today
+            end = tool_input.get("end_date") or start
+            return _format_resilience(trace_id, start, end)
 
         elif tool_name == "get_walking_data":
             days = min(tool_input.get("days", 7), 90)
