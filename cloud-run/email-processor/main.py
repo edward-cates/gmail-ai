@@ -29,6 +29,10 @@ SCOPES = [
 # Threshold for combining text and HTML content (HTML must be 2x longer to combine)
 HTML_LENGTH_MULTIPLIER = 2.0
 
+# Label stamped on summaries this app emails to the user, so the archive-summaries
+# job can find them by label instead of by subject (Gmail search drops emoji).
+SUMMARY_LABEL = "ai-summary"
+
 
 def log_structured(
     trace_id: str, email_id: str, stage: str, result: str = "success", metadata: dict | None = None
@@ -195,6 +199,25 @@ def apply_label(service, email_id: str, label_name: str, archive: bool = False) 
     service.users().messages().modify(userId="me", id=email_id, body=body).execute()
 
 
+def label_summary_thread(service, sent_id: str, label_name: str = SUMMARY_LABEL) -> None:
+    """Label a summary we just sent to ourselves.
+
+    Sending to yourself produces two messages — the SENT copy and the delivered
+    INBOX copy — so label the whole thread to be sure the inbox copy is tagged.
+
+    Never fatal: the summary is already sent by this point, so a labeling hiccup
+    must not fail the run. Worst case the summary is not auto-archived later.
+    """
+    try:
+        label_id = get_or_create_label(service, label_name)
+        sent = service.users().messages().get(userId="me", id=sent_id, format="minimal").execute()
+        service.users().threads().modify(
+            userId="me", id=sent["threadId"], body={"addLabelIds": [label_id]}
+        ).execute()
+    except Exception as e:
+        logger.error(f"Failed to label summary thread for {sent_id}: {e}")
+
+
 def classify_email(subject: str, sender: str, body: str) -> dict:
     """Classify email using Claude."""
     api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -226,6 +249,14 @@ def classify_email(subject: str, sender: str, body: str) -> dict:
   privacy policy updates, terms of service updates (UNLESS they contain suspicious, sneaky,
   or significantly harmful changes—in that case, classify as 'other').
 
+- recruiting: A human recruiter reaching out to YOU personally about a specific role or opportunity.
+  The message reads like it was written (or at least tailored) by a person — addresses you by name,
+  references your background, names a specific company/role, and invites a reply or call. May come from
+  in-house recruiters, agency recruiters, or sourcers. Classify here ONLY for human outreach.
+  Do NOT classify here: automated job-board alerts (LinkedIn Jobs digests, Indeed/Wellfound match emails,
+  "jobs you might like"), generic newsletters from recruiting firms, or mass blasts with no personalization
+  — those remain 'noti' or 'marketing' as appropriate.
+
 - other: Important notifications or personal emails that need attention and/or response. Includes
   notifications that enable or require user action, even if automated. Do NOT classify here
   unless it clearly doesn't fit above categories.
@@ -233,7 +264,11 @@ def classify_email(subject: str, sender: str, body: str) -> dict:
   account security alerts, credit monitoring alerts indicating significant changes (score drops, new accounts),
   direct messages from real people, direct social media comments from real people (they warrant response),
   calendar invites, support responses, shared files/passes to download, health portal messages,
-  notifications that enable taking action or require review.
+  notifications that enable taking action or require review,
+  Homeroom (school messaging app) emails carrying a message from the kindergarten class/teacher —
+  these must stay in the inbox, so classify them 'other' even though they arrive as automated
+  notification emails. Homeroom emails about OTHER grades/classes, or Homeroom account/product
+  notifications with no kindergarten message content, follow the normal rules above.
 
 Email:
 From: {sender}
@@ -354,6 +389,21 @@ def main():
         except Exception as e:
             logger.error(f"Failed to apply label/archive: {e}")
             log_structured(trace_id, email_id, "action", "failure", {"error": str(e)})
+    elif category == "recruiting":
+        # Label but leave in inbox so user can decide whether to reply
+        try:
+            apply_label(service, email_id, category, archive=False)
+            log_structured(
+                trace_id,
+                email_id,
+                "action",
+                "success",
+                {"action": "label_keep_inbox", "label": category},
+            )
+            logger.info(f"Applied 'recruiting' label, left in inbox: {email_id}")
+        except Exception as e:
+            logger.error(f"Failed to apply recruiting label: {e}")
+            log_structured(trace_id, email_id, "action", "failure", {"error": str(e)})
     elif category == "newsletter":
         # Axios gets immediate 1:1 summary; all others batch into morning digest
         is_axios = "@axios.com" in sender.lower()
@@ -379,6 +429,7 @@ def main():
                     f"View original: {gmail_link}"
                 )
                 sent_id = send_email(service, user_email, summary_subject, summary_body)
+                label_summary_thread(service, sent_id)
                 log_structured(trace_id, email_id, "send_summary", "success", {"sent_id": sent_id})
 
                 apply_label(service, email_id, category, archive=True)

@@ -29,6 +29,9 @@ SCOPES = [
 
 PENDING_LABEL = "newsletter-pending"
 DIGESTED_LABEL = "newsletter-digested"
+# Label stamped on digests this app emails to the user, so the archive-summaries
+# job can find them by label instead of by subject (Gmail search drops emoji).
+SUMMARY_LABEL = "ai-summary"
 
 
 def get_gmail_service():
@@ -158,6 +161,25 @@ def move_label(service, email_id: str, from_label: str, to_label: str) -> None:
     ).execute()
 
 
+def label_summary_thread(service, sent_id: str, label_name: str = SUMMARY_LABEL) -> None:
+    """Label a digest we just sent to ourselves.
+
+    Sending to yourself produces two messages — the SENT copy and the delivered
+    INBOX copy — so label the whole thread to be sure the inbox copy is tagged.
+
+    Never fatal: the digest is already sent by this point, so a labeling hiccup
+    must not fail the run. Worst case the digest is not auto-archived later.
+    """
+    try:
+        label_id = get_or_create_label(service, label_name)
+        sent = service.users().messages().get(userId="me", id=sent_id, format="minimal").execute()
+        service.users().threads().modify(
+            userId="me", id=sent["threadId"], body={"addLabelIds": [label_id]}
+        ).execute()
+    except Exception as e:
+        logger.error(f"Failed to label summary thread for {sent_id}: {e}")
+
+
 def send_email(service, to: str, subject: str, body: str) -> str:
     """Send an email and return the message ID."""
     message = MIMEText(body)
@@ -247,7 +269,8 @@ def main():
     if not messages:
         # No newsletters — send a good morning message
         greeting = generate_good_morning()
-        send_email(service, user_email, "🤖 Good Morning!", greeting)
+        sent_id = send_email(service, user_email, "🤖 Good Morning!", greeting)
+        label_summary_thread(service, sent_id)
         logger.info("No pending newsletters — sent good morning email")
         return
 
@@ -281,6 +304,7 @@ def main():
     )
 
     sent_id = send_email(service, user_email, "🤖 Morning Digest", digest_body)
+    label_summary_thread(service, sent_id)
     logger.info(f"Sent digest email: {sent_id}")
 
     # Move all processed newsletters from pending to digested
