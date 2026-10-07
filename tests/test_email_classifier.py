@@ -123,3 +123,39 @@ class TestClassifierModes:
             result = processor.classify_email("s", "f", "b")
         assert result["category"] == "newsletter"
         assert result["shadow"] == {"error": "boom"}
+
+
+class TestMainSafety:
+    """A failed or unsure classification must never label, archive, or send."""
+
+    def _run_main(self, classify):
+        email = {"subject": "s", "from": "f@x.com", "body": "b", "snippet": "", "thread_id": "t"}
+        with patch.dict("os.environ", {"EMAIL_ID": "e1", "CLASSIFIER": "decisions"}), \
+                patch.object(processor, "get_gmail_service", return_value=MagicMock()), \
+                patch.object(processor, "fetch_email", return_value=email), \
+                patch.object(processor, "classify_email", side_effect=classify), \
+                patch.object(processor, "apply_label") as apply_label, \
+                patch.object(processor, "send_email") as send_email:
+            try:
+                processor.main()
+                exit_code = 0
+            except SystemExit as e:
+                exit_code = e.code
+        return exit_code, apply_label, send_email
+
+    def test_classifier_error_leaves_email_alone(self):
+        code, apply_label, send_email = self._run_main(RuntimeError("Decisions API 500"))
+        assert code == 1
+        apply_label.assert_not_called()
+        send_email.assert_not_called()
+
+    @patch.dict("os.environ", ENV)
+    def test_low_confidence_leaves_email_alone(self):
+        def classify(*args):
+            with patch.object(processor.urllib.request, "urlopen", return_value=_decision("noti", 0.41)):
+                return processor.classify_email_decisions(*args)
+
+        code, apply_label, send_email = self._run_main(classify)
+        assert code == 0
+        apply_label.assert_not_called()
+        send_email.assert_not_called()
