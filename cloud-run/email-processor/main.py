@@ -270,12 +270,16 @@ CATEGORIES = {
         "account security alerts, credit monitoring alerts indicating significant changes "
         "(score drops, new accounts), direct messages from real people, direct social media "
         "comments from real people (they warrant response), calendar invites, support "
-        "responses, shared files/passes to download, health portal messages, notifications "
-        "that enable taking action or require review, Homeroom (school messaging app) emails "
-        "carrying a message from the kindergarten class/teacher — these must stay in the "
-        "inbox, so classify them 'other' even though they arrive as automated notification "
-        "emails. Homeroom emails about OTHER grades/classes, or Homeroom account/product "
-        "notifications with no kindergarten message content, follow the normal rules above."
+        "responses, shared files/passes to download, health portal messages, personalized "
+        "reports or updates from a real person (e.g., a real estate agent) about the "
+        "recipient's own property, accounts, or affairs—such as a home value report—even if "
+        "that person works in sales; the personalized, individually-relevant content makes it "
+        "'other', not 'marketing', notifications that enable taking action or require review, "
+        "Homeroom (school messaging app) emails carrying a message from the kindergarten "
+        "class/teacher — these must stay in the inbox, so classify them 'other' even though "
+        "they arrive as automated notification emails. Homeroom emails about OTHER "
+        "grades/classes, or Homeroom account/product notifications with no kindergarten "
+        "message content, follow the normal rules above."
     ),
 }
 
