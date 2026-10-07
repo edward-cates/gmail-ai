@@ -234,8 +234,8 @@ deploy-email-processor:
 		--cpu=1 \
 		--max-retries=1 \
 		--service-account="$$SERVICE_ACCOUNT" \
-		--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=$(PROJECT_ID)" \
-		--set-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest" \
+		--set-env-vars="GMAIL_AI_STORAGE_BUCKET=gmail-ai-logs,GMAIL_AI_PROJECT_ID=$(PROJECT_ID),CLASSIFIER=shadow" \
+		--set-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest,OPENAI_API_KEY=openai-api-key:latest" \
 		--project=$(PROJECT_ID) && \
 	echo "✓ email-processor job deployed!"
 

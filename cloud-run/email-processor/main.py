@@ -9,6 +9,9 @@ import logging
 import os
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
 
 from bs4 import BeautifulSoup
 from google.auth.transport.requests import Request
@@ -218,7 +221,71 @@ def label_summary_thread(service, sent_id: str, label_name: str = SUMMARY_LABEL)
         logger.error(f"Failed to label summary thread for {sent_id}: {e}")
 
 
-def classify_email(subject: str, sender: str, body: str) -> dict:
+# Email categories and what each means. Single source of truth for both
+# classifiers: rendered into the Claude prompt, and sent as the allowed choices
+# to the OpenAI Decisions API.
+CATEGORIES = {
+    "marketing": (
+        "Purpose is to drive ENGAGEMENT (clicks, purchases, signups). Even if it contains "
+        "information, its goal is to get you to do something. Typically promotional, "
+        "sales-driven, or trying to re-engage you with a product/service. Usually has an "
+        "unsubscribe link. Examples: sales announcements, \"we miss you\" emails, product "
+        "launches, limited-time offers, \"check out what's new\", app feature promotions, "
+        "referral requests."
+    ),
+    "newsletter": (
+        "Purpose is to INFORM. Information-dense content that delivers value through the "
+        "content itself, not by driving you elsewhere. Often longer-form, educational, or "
+        "curated content. Examples: blog digests, industry news roundups, educational "
+        "content, personal essays from creators, curated links with commentary, research "
+        "updates."
+    ),
+    "noti": (
+        "Unimportant/noisy NOTIFICATIONS. Automated alerts that don't require attention or "
+        "action. These are informational only, NOT actionable. If the notification requires "
+        "or enables user action (downloading something, responding, reviewing important "
+        "information), classify as 'other' instead. Examples: social media activity (likes, "
+        "follows, comments), app badges, shipping updates, order confirmations, receipts, "
+        "subscription renewals, \"someone viewed your profile\", automated system alerts, "
+        "calendar reminders, read receipts, routine credit monitoring alerts (e.g., Experian, "
+        "TransUnion, Equifax regular status updates without significant changes), privacy "
+        "policy updates, terms of service updates (UNLESS they contain suspicious, sneaky, or "
+        "significantly harmful changes—in that case, classify as 'other')."
+    ),
+    "recruiting": (
+        "A human recruiter reaching out to YOU personally about a specific role or "
+        "opportunity. The message reads like it was written (or at least tailored) by a "
+        "person — addresses you by name, references your background, names a specific "
+        "company/role, and invites a reply or call. May come from in-house recruiters, agency "
+        "recruiters, or sourcers. Classify here ONLY for human outreach. Do NOT classify "
+        "here: automated job-board alerts (LinkedIn Jobs digests, Indeed/Wellfound match "
+        "emails, \"jobs you might like\"), generic newsletters from recruiting firms, or mass "
+        "blasts with no personalization — those remain 'noti' or 'marketing' as appropriate."
+    ),
+    "other": (
+        "Important notifications or personal emails that need attention and/or response. "
+        "Includes notifications that enable or require user action, even if automated. Do NOT "
+        "classify here unless it clearly doesn't fit above categories. Examples: password "
+        "resets, 2FA codes, bank/payment alerts requiring action (unusual activity, fraud), "
+        "account security alerts, credit monitoring alerts indicating significant changes "
+        "(score drops, new accounts), direct messages from real people, direct social media "
+        "comments from real people (they warrant response), calendar invites, support "
+        "responses, shared files/passes to download, health portal messages, notifications "
+        "that enable taking action or require review, Homeroom (school messaging app) emails "
+        "carrying a message from the kindergarten class/teacher — these must stay in the "
+        "inbox, so classify them 'other' even though they arrive as automated notification "
+        "emails. Homeroom emails about OTHER grades/classes, or Homeroom account/product "
+        "notifications with no kindergarten message content, follow the normal rules above."
+    ),
+}
+
+# Decisions answers below this confidence fall back to "other" (stay in inbox):
+# every other category archives or relabels, so "unsure" must mean "leave it".
+DECISIONS_MIN_CONFIDENCE = 0.6
+DECISIONS_URL = "https://api.openai.com/v1/decisions"
+
+
+def classify_email_claude(subject: str, sender: str, body: str) -> dict:
     """Classify email using Claude."""
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
@@ -226,49 +293,10 @@ def classify_email(subject: str, sender: str, body: str) -> dict:
 
     llm = ChatAnthropic(model="claude-opus-4-6", api_key=api_key, max_tokens=500)
 
+    categories = "\n\n".join(f"- {name}: {desc}" for name, desc in CATEGORIES.items())
     prompt = f"""Classify this email by its PRIMARY PURPOSE into one of these categories:
 
-- marketing: Purpose is to drive ENGAGEMENT (clicks, purchases, signups). Even if it contains
-  information, its goal is to get you to do something. Typically promotional, sales-driven,
-  or trying to re-engage you with a product/service. Usually has an unsubscribe link.
-  Examples: sales announcements, "we miss you" emails, product launches, limited-time offers,
-  "check out what's new", app feature promotions, referral requests.
-
-- newsletter: Purpose is to INFORM. Information-dense content that delivers value through the
-  content itself, not by driving you elsewhere. Often longer-form, educational, or curated content.
-  Examples: blog digests, industry news roundups, educational content, personal essays from creators,
-  curated links with commentary, research updates.
-
-- noti: Unimportant/noisy NOTIFICATIONS. Automated alerts that don't require attention or action.
-  These are informational only, NOT actionable. If the notification requires or enables user action
-  (downloading something, responding, reviewing important information), classify as 'other' instead.
-  Examples: social media activity (likes, follows, comments), app badges, shipping updates,
-  order confirmations, receipts, subscription renewals, "someone viewed your profile",
-  automated system alerts, calendar reminders, read receipts, routine credit monitoring alerts
-  (e.g., Experian, TransUnion, Equifax regular status updates without significant changes),
-  privacy policy updates, terms of service updates (UNLESS they contain suspicious, sneaky,
-  or significantly harmful changes—in that case, classify as 'other').
-
-- recruiting: A human recruiter reaching out to YOU personally about a specific role or opportunity.
-  The message reads like it was written (or at least tailored) by a person — addresses you by name,
-  references your background, names a specific company/role, and invites a reply or call. May come from
-  in-house recruiters, agency recruiters, or sourcers. Classify here ONLY for human outreach.
-  Do NOT classify here: automated job-board alerts (LinkedIn Jobs digests, Indeed/Wellfound match emails,
-  "jobs you might like"), generic newsletters from recruiting firms, or mass blasts with no personalization
-  — those remain 'noti' or 'marketing' as appropriate.
-
-- other: Important notifications or personal emails that need attention and/or response. Includes
-  notifications that enable or require user action, even if automated. Do NOT classify here
-  unless it clearly doesn't fit above categories.
-  Examples: password resets, 2FA codes, bank/payment alerts requiring action (unusual activity, fraud),
-  account security alerts, credit monitoring alerts indicating significant changes (score drops, new accounts),
-  direct messages from real people, direct social media comments from real people (they warrant response),
-  calendar invites, support responses, shared files/passes to download, health portal messages,
-  notifications that enable taking action or require review,
-  Homeroom (school messaging app) emails carrying a message from the kindergarten class/teacher —
-  these must stay in the inbox, so classify them 'other' even though they arrive as automated
-  notification emails. Homeroom emails about OTHER grades/classes, or Homeroom account/product
-  notifications with no kindergarten message content, follow the normal rules above.
+{categories}
 
 Email:
 From: {sender}
@@ -290,6 +318,89 @@ Respond with JSON only:
         return json.loads(content)
     except (json.JSONDecodeError, IndexError):
         return {"category": "other", "confidence": 0.0, "reason": f"Parse error: {content[:100]}"}
+
+
+def _post_decisions(api_key: str, payload: dict) -> dict:
+    """POST to the Decisions API, retrying rate limits / overload with backoff."""
+    data = json.dumps(payload).encode("utf-8")
+    for attempt in range(5):
+        req = urllib.request.Request(
+            DECISIONS_URL,
+            data=data,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 503, 529) and attempt < 4:
+                time.sleep(0.5 * 2**attempt)
+                continue
+            raise RuntimeError(f"Decisions API {e.code}: {e.read()[:300]!r}") from e
+    raise RuntimeError("Decisions API: retries exhausted")
+
+
+def classify_email_decisions(subject: str, sender: str, body: str) -> dict:
+    """Classify email with OpenAI's Decisions API (one typed choice question).
+
+    Same return shape as classify_email_claude. The answer can only be one of
+    CATEGORIES; refusals and low-confidence answers become "other".
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY not set")
+
+    result = _post_decisions(
+        api_key,
+        {
+            "model": "gpt-6-luna",
+            "input": f"From: {sender}\nSubject: {subject}\nBody: {body[:4000]}",
+            "questions": [
+                {
+                    "type": "choice",
+                    "name": "category",
+                    "instructions": "Classify this email by its PRIMARY PURPOSE.",
+                    "choices": [
+                        {"value": name, "description": desc} for name, desc in CATEGORIES.items()
+                    ],
+                }
+            ],
+        },
+    )
+    answer = result["answers"][0]
+    if answer.get("type") != "choice":
+        return {"category": "other", "confidence": 0.0, "reason": "decisions: refusal"}
+
+    probs = sorted(answer.get("probabilities", []), key=lambda p: -p["probability"])[:3]
+    reason = "decisions: " + ", ".join(f"{p['value']}={p['probability']:.2f}" for p in probs)
+    confidence = float(answer.get("confidence", 0.0))
+    category = answer["choice"]
+    if category not in CATEGORIES or confidence < DECISIONS_MIN_CONFIDENCE:
+        reason += f" (low confidence for {category}, kept in inbox)"
+        category = "other"
+    return {"category": category, "confidence": confidence, "reason": reason}
+
+
+def classify_email(subject: str, sender: str, body: str) -> dict:
+    """Classify with the backend chosen by CLASSIFIER: claude (default), shadow, decisions.
+
+    shadow acts on Claude's answer but also asks Decisions and attaches its
+    answer under "shadow" for comparison. A shadow failure never fails the run.
+    """
+    mode = os.getenv("CLASSIFIER", "claude")
+    if mode == "decisions":
+        return classify_email_decisions(subject, sender, body)
+
+    result = classify_email_claude(subject, sender, body)
+    if mode == "shadow":
+        try:
+            shadow = classify_email_decisions(subject, sender, body)
+            shadow["agree"] = shadow["category"] == result.get("category")
+        except Exception as e:
+            shadow = {"error": str(e)}
+        result["shadow"] = shadow
+    return result
 
 
 def summarize_newsletter(subject: str, sender: str, body: str) -> str:
@@ -371,6 +482,15 @@ def main():
         sys.exit(1)
 
     log_structured(trace_id, email_id, "classification", "success", classification)
+    if "shadow" in classification:
+        log_structured(trace_id, email_id, "classifier_shadow", "success", {
+            "claude": classification.get("category"),
+            "decisions": classification["shadow"].get("category"),
+            "agree": classification["shadow"].get("agree"),
+            "decisions_reason": classification["shadow"].get("reason") or classification["shadow"].get("error"),
+            "subject": subject,
+            "from": sender,
+        })
 
     # ACTION based on category
     category = classification.get("category", "other")
